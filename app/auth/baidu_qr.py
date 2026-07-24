@@ -178,7 +178,9 @@ async def _complete_login(client: httpx.AsyncClient, sess: BaiduQRSession, bduss
 async def _poll(sess: BaiduQRSession) -> None:
     deadline = time.time() + 180
     scanned_at: float | None = None
-    async with httpx.AsyncClient(timeout=None, headers={"User-Agent": UA}, follow_redirects=True) as client:
+    # long poll for QR confirm — use long read timeout, not infinite (R3)
+    _qr_to = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
+    async with httpx.AsyncClient(timeout=_qr_to, headers={"User-Agent": UA}, follow_redirects=True) as client:
         while time.time() < deadline and sess.status in ("pending", "scanned"):
             try:
                 # long-poll style: wait up to 25s for next event

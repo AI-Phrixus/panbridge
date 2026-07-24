@@ -35,13 +35,15 @@ async def lifespan(app: FastAPI):
     settings.data_path.mkdir(parents=True, exist_ok=True)
     await db.connect()
     worker.start()
+    app.state.worker = worker
     log.info("PanBridge ready on %s:%s data=%s", settings.host, settings.port, settings.data_path)
     yield
     await worker.stop()
     await db.close()
 
 
-app = FastAPI(title="PanBridge", version="0.3.5", lifespan=lifespan)
+app = FastAPI(title="PanBridge", version="0.3.6", lifespan=lifespan)
+app.state.worker = worker
 app.include_router(auth_router)
 app.include_router(tasks_router)
 app.include_router(stream_router)

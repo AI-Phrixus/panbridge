@@ -4,6 +4,8 @@ import shutil
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from app.util_paths import safe_under_root, sanitize_rel_path
+
 
 class LocalSink:
     """Keep finished files on VPS for user download (best free option for huge files)."""
@@ -19,18 +21,21 @@ class LocalSink:
         filename: str,
         progress_cb: Callable[[int, int], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
-        # remote_folder_path like /PanBridge/title/sub
-        rel = remote_folder_path.strip("/").replace("..", "")
-        dest_dir = self.root / rel
+        rel = sanitize_rel_path(remote_folder_path)
+        safe_name = Path(sanitize_rel_path(filename)).name or "file"
+        if rel:
+            dest = safe_under_root(self.root, rel, safe_name)
+            dest_dir = dest.parent
+        else:
+            dest = safe_under_root(self.root, safe_name)
+            dest_dir = dest.parent
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / filename
         size = local_path.stat().st_size
         if dest.exists() and dest.stat().st_size == size:
             if progress_cb:
                 await progress_cb(size, size)
             return {"path": str(dest), "size": size, "skipped": True}
 
-        # move is free if same filesystem; else copy+delete
         if progress_cb:
             await progress_cb(0, size)
         try:

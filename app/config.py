@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     pcloud_api_host: str = "eapi.pcloud.com"
     pcloud_default_path: str = "/PanBridge"
     session_max_age: int = 60 * 60 * 24 * 30
-    app_version: str = "0.3.5"
+    app_version: str = "0.3.6"
 
     @property
     def data_path(self) -> Path:

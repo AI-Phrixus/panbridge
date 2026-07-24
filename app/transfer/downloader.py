@@ -88,6 +88,9 @@ async def resumable_download(
         if expected_size and size and abs(expected_size - size) > 0:
             size = expected_size or size
 
+    # BUG-9: multi-conn cannot refresh expired dlinks — force single when refresh needed
+    if url_refresh_cb is not None:
+        conns = 1
     # threshold: multi only if >= 8MB and range ok and conns>1
     if conns <= 1 or not can_range or (size and size < 8 * 1024 * 1024) or size == 0:
         return await _single_stream_download(
@@ -215,6 +218,12 @@ async def _single_stream_download(
                     attempt,
                 )
                 continue
+            # BUG-4: unknown expected size — refuse empty completion; require positive body
+            if not expected_size:
+                if final_size <= 0:
+                    log.warning("empty download with unknown size, retry %s", attempt)
+                    continue
+                # if we learned total from headers and fell short, already handled above
             return part
         except RuntimeError as e:
             msg = str(e).lower()

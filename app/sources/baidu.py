@@ -194,20 +194,42 @@ class BaiduSource:
             if m:
                 uk = m.group(1)
 
-            # try list APIs
+            # try list APIs (BUG-8: paginate beyond first 100)
             last_err: Any = None
             list_data: dict[str, Any] | None = None
 
+            async def _list_all(base_params: dict[str, Any]) -> dict[str, Any] | None:
+                page = 1
+                all_items: list[Any] = []
+                first: dict[str, Any] | None = None
+                while page <= 50:  # hard cap 5000 entries
+                    params = {**base_params, "page": page, "num": 100}
+                    r = await client.get(
+                        "https://pan.baidu.com/share/list",
+                        params=params,
+                        headers=self._headers(),
+                    )
+                    d = r.json()
+                    if d.get("errno") != 0:
+                        return first if first else None
+                    if first is None:
+                        first = dict(d)
+                    batch = d.get("list") or []
+                    all_items.extend(batch)
+                    if len(batch) < 100:
+                        break
+                    page += 1
+                if first is not None:
+                    first["list"] = all_items
+                return first
+
             # 1) shareid + uk
             if shareid and uk:
-                r = await client.get(
-                    "https://pan.baidu.com/share/list",
-                    params={
+                d = await _list_all(
+                    {
                         "shareid": shareid,
                         "uk": uk,
                         "root": 1,
-                        "page": 1,
-                        "num": 100,
                         "channel": "chunlei",
                         "web": 1,
                         "clienttype": 0,
@@ -215,35 +237,28 @@ class BaiduSource:
                         "order": "other",
                         "desc": 1,
                         "showempty": 0,
-                    },
-                    headers=self._headers(),
+                    }
                 )
-                d = r.json()
-                if d.get("errno") == 0:
+                if d is not None:
                     list_data = d
                 else:
-                    last_err = d
+                    last_err = {"errno": -1, "show_msg": "share list failed"}
 
             # 2) shorturl forms
             if list_data is None:
                 for form in self._short_forms(surl):
                     for short in (form if form.startswith("1") else "1" + form, form):
-                        r = await client.get(
-                            "https://pan.baidu.com/share/list",
-                            params={
+                        d = await _list_all(
+                            {
                                 "shorturl": short,
                                 "root": 1,
-                                "page": 1,
-                                "num": 100,
                                 "channel": "chunlei",
                                 "web": 1,
                                 "clienttype": 0,
                                 "app_id": 250528,
-                            },
-                            headers=self._headers(),
+                            }
                         )
-                        d = r.json()
-                        if d.get("errno") == 0:
+                        if d is not None:
                             list_data = d
                             shareid = str(d.get("share_id") or d.get("shareid") or shareid or "")
                             uk = str(d.get("uk") or d.get("share_uk") or uk or "")

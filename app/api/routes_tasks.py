@@ -4,7 +4,7 @@ import mimetypes
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -207,9 +207,13 @@ async def retry_task(job_id: int, _: None = Depends(require_auth)):
 
 
 @router.post("/{job_id}/cancel")
-async def cancel_task(job_id: int, _: None = Depends(require_auth)):
+async def cancel_task(job_id: int, request: Request, _: None = Depends(require_auth)):
     job = await db.get_job(job_id)
     if not job:
         raise HTTPException(404, "not found")
     await db.update_job(job_id, status="cancelled", status_detail="已取消")
+    # BUG-11: also cancel in-flight asyncio task (upload/download)
+    worker = getattr(request.app.state, "worker", None)
+    if worker is not None and hasattr(worker, "request_cancel"):
+        worker.request_cancel(job_id)
     return {"ok": True}

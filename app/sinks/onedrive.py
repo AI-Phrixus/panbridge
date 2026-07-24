@@ -10,6 +10,8 @@ import httpx
 
 from app.auth.onedrive_auth import refresh_access_token
 
+# type alias used in __init__
+
 log = logging.getLogger("panbridge.onedrive")
 
 GRAPH = "https://graph.microsoft.com/v1.0"
@@ -19,10 +21,17 @@ _TIMEOUT = httpx.Timeout(connect=30.0, read=180.0, write=180.0, pool=30.0)
 
 
 class OneDriveSink:
-    def __init__(self, access_token: str, refresh_token: str = "", client_id: str = "") -> None:
+    def __init__(
+        self,
+        access_token: str,
+        refresh_token: str = "",
+        client_id: str = "",
+        on_tokens: Callable[[str, str], Awaitable[None]] | None = None,
+    ) -> None:
         self.access_token = access_token
         self.refresh_token = refresh_token
         self.client_id = client_id
+        self._on_tokens = on_tokens  # persist rotated tokens (BUG-10)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.access_token}"}
@@ -35,6 +44,11 @@ class OneDriveSink:
             self.access_token = tok["access_token"]
             if tok.get("refresh_token"):
                 self.refresh_token = tok["refresh_token"]
+            if self._on_tokens:
+                try:
+                    await self._on_tokens(self.access_token, self.refresh_token)
+                except Exception as e:
+                    log.warning("onedrive token persist failed: %s", e)
             return True
         except Exception as e:
             log.warning("onedrive token refresh failed: %s", e)
@@ -111,10 +125,22 @@ class OneDriveSink:
         if r2.status_code in (200, 201):
             return r2.json()["id"]
         if r2.status_code in (409, 400):
-            r3 = await self._request("GET", list_url, params={"$select": "id,name,folder", "$top": "200"})
-            for it in (r3.json().get("value") or []):
-                if it.get("name") == name and "folder" in it:
-                    return it["id"]
+            # paginate conflict re-list (BUG-14)
+            next_url2: str | None = list_url
+            params2: dict[str, str] | None = {"$select": "id,name,folder", "$top": "200"}
+            while next_url2:
+                if next_url2 == list_url:
+                    r3 = await self._request("GET", next_url2, params=params2)
+                else:
+                    r3 = await self._request("GET", next_url2)
+                if r3.status_code >= 400:
+                    break
+                data3 = r3.json()
+                for it in data3.get("value") or []:
+                    if it.get("name") == name and "folder" in it:
+                        return it["id"]
+                next_url2 = data3.get("@odata.nextLink")
+                params2 = None
         raise RuntimeError(f"create folder {name}: {r2.status_code} {r2.text[:200]}")
 
     async def upload_file(
@@ -151,6 +177,7 @@ class OneDriveSink:
         upload_url = r.json()["uploadUrl"]
 
         sent = 0
+        final_item: dict[str, Any] | None = None
         with open(local_path, "rb") as f:
             while sent < size:
                 chunk = f.read(CHUNK)
@@ -172,10 +199,13 @@ class OneDriveSink:
                             if progress_cb:
                                 await progress_cb(sent, size)
                             if ur.status_code in (200, 201):
-                                return ur.json()
+                                try:
+                                    final_item = ur.json()
+                                except Exception:
+                                    final_item = {"name": filename, "size": size}
+                                return final_item
                             last_err = None
                             break
-                        # session expired / conflict → recreate for remaining is hard; fail with detail
                         if ur.status_code in (404, 410):
                             raise RuntimeError(
                                 f"upload session expired HTTP {ur.status_code}; will retry file upload"
@@ -198,11 +228,12 @@ class OneDriveSink:
                 if last_err is not None and sent <= start:
                     raise RuntimeError(f"onedrive chunk failed after retries: {last_err}") from last_err
 
-        # Graph should return 200/201 on the final chunk; if we only saw 202s, treat incomplete
+        # BUG-1: never treat "all 202s" as success without Drive item
         if sent < size:
             raise RuntimeError(f"onedrive upload incomplete: {sent}/{size} bytes")
-        # Prefer re-fetching item meta is optional; size match is enough for our bookkeeping
-        return {"name": filename, "size": size}
+        raise RuntimeError(
+            "onedrive upload finished bytes but never received 200/201 item metadata; retry session"
+        )
 
     async def root_web_url(self) -> str:
         r = await self._request("GET", f"{GRAPH}/me/drive/root")

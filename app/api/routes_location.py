@@ -186,12 +186,15 @@ async def browse_local(job_id: int, _: None = Depends(require_auth)):
             path = settings.data_path / "delivered" / rel
         exists = path.exists() if path else False
         size = path.stat().st_size if exists else int(f.get("size") or 0)
+        from html import escape as _esc
+
+        name = _esc(str(f.get("relative_path") or f.get("remote_name") or ""))
         rows.append(
-            f"<tr><td>{f['id']}</td><td>{f.get('relative_path') or f.get('remote_name')}</td>"
-            f"<td>{'存在' if exists else '已清理'}</td><td>{size}</td>"
+            f"<tr><td>{int(f['id'])}</td><td>{name}</td>"
+            f"<td>{'存在' if exists else '已清理'}</td><td>{int(size)}</td>"
             f"<td>"
             + (
-                f"<button onclick=\"delFile({job_id},{f['id']})\">删除本地副本</button>"
+                f"<button onclick=\"delFile({int(job_id)},{int(f['id'])})\">删除本地副本</button>"
                 if exists
                 else "-"
             )

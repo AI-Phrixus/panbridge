@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+import time
+from collections import defaultdict, deque
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from app.api.deps import require_auth
@@ -10,6 +13,21 @@ from app.db import db
 from app.security import check_password, encrypt_json, make_session_token
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# simple in-memory login rate limit (BUG-16)
+_login_hits: dict[str, deque[float]] = defaultdict(deque)
+_LOGIN_WINDOW = 300.0  # 5 min
+_LOGIN_MAX = 20
+
+
+def _rate_limit_login(ip: str) -> None:
+    now = time.time()
+    q = _login_hits[ip]
+    while q and now - q[0] > _LOGIN_WINDOW:
+        q.popleft()
+    if len(q) >= _LOGIN_MAX:
+        raise HTTPException(status_code=429, detail="too many login attempts, try later")
+    q.append(now)
 
 
 class PasswordIn(BaseModel):
@@ -33,15 +51,20 @@ class PCloudTokenIn(BaseModel):
 
 
 @router.post("/login")
-async def login(body: PasswordIn, response: Response):
+async def login(body: PasswordIn, request: Request, response: Response):
+    ip = request.client.host if request.client else "unknown"
+    _rate_limit_login(ip)
     if not check_password(body.password):
         raise HTTPException(status_code=401, detail="wrong password")
     token = make_session_token()
+    # Secure cookie when behind TLS reverse proxy
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").lower()
     response.set_cookie(
         "panbridge_session",
         token,
         httponly=True,
         samesite="lax",
+        secure=(proto == "https"),
         max_age=get_settings().session_max_age,
     )
     return {"ok": True}

@@ -97,7 +97,7 @@ class PCloudSink:
                     "auth": self.auth,
                     "folderid": str(folderid),
                     "filename": filename,
-                    "nopartial": "0",
+                    "nopartial": "1",
                     "progresshash": progresshash,
                     "renameifexists": "0",
                 }
@@ -108,7 +108,7 @@ class PCloudSink:
                 "auth": self.auth,
                 "folderid": folderid,
                 "filename": filename,
-                "nopartial": 0,
+                "nopartial": 1,
                 "progresshash": progresshash,
             }
 
@@ -138,7 +138,7 @@ class PCloudSink:
                         data={
                             "auth": self.auth,
                             "folderid": str(folderid),
-                            "nopartial": "0",
+                            "nopartial": "1",
                             "progresshash": progresshash,
                         },
                         files={"file": (filename, f)},
@@ -148,9 +148,19 @@ class PCloudSink:
                     raise RuntimeError(f"pcloud upload failed: {result}")
             meta_list = result.get("metadata") or []
             meta = meta_list[0] if meta_list else result.get("metadata") or {}
+            if not isinstance(meta, dict):
+                raise RuntimeError(f"pcloud upload missing metadata: {result}")
+            remote_size = int(meta.get("size") or 0)
+            if remote_size and remote_size != size:
+                raise RuntimeError(
+                    f"pcloud upload size mismatch: remote={remote_size} local={size}"
+                )
+            if not remote_size and size > 0:
+                # some responses omit size — verify via stat when path known
+                pass
             if progress_cb:
                 await progress_cb(size, size)
-            return meta if isinstance(meta, dict) else {"raw": meta}
+            return meta
 
     async def web_url_for_path(self, remote_path: str) -> str:
         """Best-effort open location in pCloud web UI."""

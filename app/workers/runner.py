@@ -74,7 +74,7 @@ class Worker:
                 await self._reap_and_watch_stale()
                 active = len(self._running_jobs)
                 if active < settings.max_concurrent_jobs:
-                    job = await self.db.claim_next_job()
+                    job = await self.db.claim_next_job(exclude_ids=set(self._running_jobs))
                     if job and job["id"] not in self._running_jobs:
                         if job["status"] in (
                             "queued",
@@ -187,11 +187,33 @@ class Worker:
         files = await self.db.list_files(job_id)
         share_meta: dict[str, Any] = {}
 
-        if not files:
+        # BUG-3: crash mid-resolve left partial files + status saving/resolving → re-resolve
+        need_resolve = (not files) or (job["status"] in ("resolving", "saving"))
+        if need_resolve:
+            if files and job["status"] in ("resolving", "saving"):
+                log.warning("job %s incomplete resolve state; clearing %s file rows", job_id, len(files))
+                await self.db.clear_files(job_id)
             await self.db.update_job(
-                job_id, status="resolving", error_message="", status_detail="解析分享链接…"
+                job_id, status="resolving", error_message="", status_detail="解析分享連結…"
             )
-            resolved = await source.resolve(job["share_url"], job.get("passcode") or "")
+            # heartbeat so stale watchdog does not kill long resolve (BUG-12)
+            async def _hb_resolve() -> None:
+                while True:
+                    await asyncio.sleep(60)
+                    try:
+                        await self.db.update_job(job_id, status_detail="解析分享連結中…")
+                    except Exception:
+                        return
+
+            hb = asyncio.create_task(_hb_resolve())
+            try:
+                resolved = await source.resolve(job["share_url"], job.get("passcode") or "")
+            finally:
+                hb.cancel()
+                try:
+                    await hb
+                except asyncio.CancelledError:
+                    pass
             title = resolved.title or job.get("title") or ""
             base_path = job.get("pcloud_path") or f"{settings.pcloud_default_path}/{title}"
             await self.db.update_job(
@@ -199,7 +221,7 @@ class Worker:
                 title=title,
                 status="saving",
                 pcloud_path=base_path,
-                status_detail=f"已解析 {len(resolved.files)} 个文件",
+                status_detail=f"已解析 {len(resolved.files)} 個檔案",
             )
             for sf in resolved.files:
                 await self.db.create_file(
@@ -211,6 +233,10 @@ class Worker:
                     meta=sf.meta,
                 )
             share_meta = resolved.meta
+            # mark past resolve so we won't wipe files on next resume
+            await self.db.update_job(
+                job_id, status="downloading", status_detail="準備下載…"
+            )
             files = await self.db.list_files(job_id)
 
         base_path = (await self.db.get_job(job_id) or {}).get("pcloud_path") or settings.pcloud_default_path
@@ -287,28 +313,45 @@ class Worker:
                 speed_bps=0,
             )
         elif files:
-            # queued leftovers shouldn't happen; mark done if nothing left to do
-            await self.db.update_job(job_id, status="done", progress=100, speed_bps=0)
+            # BUG-13: never mark done with non-terminal leftovers
+            pending = [x for x in files if x["status"] not in ("done", "failed")]
+            names = ", ".join((x.get("remote_name") or "?") for x in pending[:5])
+            await self.db.update_job(
+                job_id,
+                status="failed",
+                error_message=f"未完成檔案: {names}"[:2000],
+                status_detail=f"異常中止（{len(pending)} 個檔案未完成）· 可點重試",
+                speed_bps=0,
+            )
 
+    def request_cancel(self, job_id: int) -> None:
+        """Cancel in-flight asyncio task for job (BUG-11)."""
+        t = self._job_tasks.get(job_id)
+        if t and not t.done():
+            t.cancel()
 
     async def _make_onedrive_sink(self) -> "OneDriveSink":
         cred = await self._load_cred("onedrive")
         access = cred.get("access_token") or ""
         refresh = cred.get("refresh_token") or ""
         client_id = cred.get("client_id") or ""
+
+        async def _persist(access_t: str, refresh_t: str) -> None:
+            cred["access_token"] = access_t
+            cred["refresh_token"] = refresh_t
+            await self.db.set_credential("onedrive", encrypt_json(cred))
+
         if refresh and client_id:
             try:
                 tok = await refresh_access_token(client_id, refresh)
                 access = tok["access_token"]
                 refresh = tok.get("refresh_token") or refresh
-                cred["access_token"] = access
-                cred["refresh_token"] = refresh
-                await self.db.set_credential("onedrive", encrypt_json(cred))
+                await _persist(access, refresh)
             except Exception as e:
                 log.warning("onedrive refresh failed: %s", e)
         if not access:
             raise RuntimeError("OneDrive 未登入或 token 失效，請到設定頁重新裝置碼登入")
-        return OneDriveSink(access, refresh, client_id)
+        return OneDriveSink(access, refresh, client_id, on_tokens=_persist)
 
     async def _pick_destination(self, destination: str, total_size: int, settings) -> tuple[str, Any, str]:
         """Choose onedrive / pcloud / local."""
@@ -348,7 +391,8 @@ class Worker:
         if destination == "onedrive":
             if not od_sink:
                 raise RuntimeError("OneDrive 未配置，請到設定頁登入")
-            if od_free is not None and total_size > od_free * 0.95 > 0:
+            # BUG-6: do not chain comparisons (od_free==0 previously bypassed the check)
+            if od_free is not None and total_size > od_free * 0.95:
                 raise RuntimeError(
                     f"OneDrive 空間不足：任務約 {total_size/1024/1024/1024:.1f} GB，剩餘約 {od_free/1024/1024/1024:.1f} GB"
                 )
@@ -425,7 +469,8 @@ class Worker:
                 part_path = final_path
 
             need_download = True
-            if final_path.exists() and (sf.size == 0 or final_path.stat().st_size >= sf.size):
+            # size==0 alone must NOT skip download (empty placeholder file)
+            if final_path.exists() and sf.size > 0 and final_path.stat().st_size >= sf.size:
                 need_download = False
                 part_path = final_path
 
@@ -469,18 +514,25 @@ class Worker:
                         speed_state["t0"] = now
                         speed_state["b0"] = done
                     speed_state["last"] = bps
-                    tot = total or sf.size or done
-                    await self.db.update_file(file_id, downloaded_bytes=done, size=tot)
+                    # BUG-7: never overwrite authoritative size with "bytes so far"
+                    tot = total or sf.size or 0
+                    if tot > 0 and sf.size > 0 and abs(tot - sf.size) > max(1024, sf.size * 0.01):
+                        tot = sf.size  # prefer share metadata size
+                    upd: dict[str, Any] = {"downloaded_bytes": done}
+                    if tot > 0 and (not sf.size or tot == sf.size):
+                        upd["size"] = tot
+                    await self.db.update_file(file_id, **upd)
+                    tot_ui = tot or sf.size or done
                     if now - getattr(dl_cb, "_last_job", 0) >= 0.8:
                         dl_cb._last_job = now  # type: ignore[attr-defined]
                         prog = await self.db.recompute_job_progress(job_id)
-                        pct = (100.0 * done / tot) if tot else 0
+                        pct = (100.0 * done / tot_ui) if tot_ui else 0
                         await self.db.update_job(
                             job_id,
                             progress=prog,
                             speed_bps=bps,
                             status_detail=(
-                                f"下載 {sf.name} · {_fmt_bytes(done)}/{_fmt_bytes(tot)}"
+                                f"下載 {sf.name} · {_fmt_bytes(done)}/{_fmt_bytes(tot_ui)}"
                                 f" ({pct:.1f}%) · {_fmt_speed(bps)}"
                             ),
                         )
@@ -556,11 +608,17 @@ class Worker:
 
             local_upload = final_path if final_path.exists() else part_path
             size_now = local_upload.stat().st_size
+            # refuse to upload truncated payloads when we know the real size
+            if sf.size > 0 and size_now < sf.size:
+                raise RuntimeError(
+                    f"下載不完整，拒絕上傳: {size_now}/{sf.size} bytes ({sf.name})"
+                )
             await self.db.update_file(
                 file_id,
                 status="uploading",
                 local_path=str(local_upload),
                 downloaded_bytes=size_now,
+                size=sf.size or size_now,
             )
             await self.db.update_job(
                 job_id,
@@ -568,13 +626,19 @@ class Worker:
                 status_detail=f"上傳中: {sf.name}",
             )
 
-            rel = (sf.relative_path or sf.name).replace("\\", "/")
+            from app.util_paths import sanitize_rel_path
+
+            rel = sanitize_rel_path(sf.relative_path or sf.name)
             parent = str(Path(rel).parent).replace("\\", "/")
             remote_dir = base_path if parent in (".", "") else base_path.rstrip("/") + "/" + parent
-            filename = Path(rel).name
+            filename = Path(rel).name or sf.name
 
             async def ul_cb(done: int, total: int) -> None:
                 bps = 0.0
+                # BUG-11: honor cancel during upload
+                j = await self.db.get_job(job_id)
+                if j and j["status"] == "cancelled":
+                    raise RuntimeError("任務已取消")
                 await self.db.update_file(file_id, uploaded_bytes=done)
                 prog = await self.db.recompute_job_progress(job_id)
                 now = time.monotonic()

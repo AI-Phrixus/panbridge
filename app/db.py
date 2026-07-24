@@ -149,9 +149,23 @@ class Database:
         await self.conn.commit()
         return int(cur.lastrowid)
 
+    _JOB_COLS = frozenset({
+        "source_type", "share_url", "passcode", "title", "status", "progress",
+        "error_message", "pcloud_path", "destination", "speed_bps", "status_detail",
+        "updated_at", "created_at",
+    })
+    _FILE_COLS = frozenset({
+        "source_fid", "remote_name", "relative_path", "size", "local_path",
+        "downloaded_bytes", "uploaded_bytes", "download_url", "pcloud_fileid",
+        "pcloud_path", "status", "error_message", "meta_json",
+    })
+
     async def update_job(self, job_id: int, **fields: Any) -> None:
         if not fields:
             return
+        bad = set(fields) - self._JOB_COLS
+        if bad:
+            raise ValueError(f"invalid job fields: {bad}")
         fields["updated_at"] = _now()
         cols = ", ".join(f"{k}=?" for k in fields)
         vals = list(fields.values()) + [job_id]
@@ -168,25 +182,42 @@ class Database:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
-    async def claim_next_job(self, allowed: set[str] | None = None) -> dict[str, Any] | None:
+    async def claim_next_job(
+        self,
+        allowed: set[str] | None = None,
+        exclude_ids: set[int] | None = None,
+    ) -> dict[str, Any] | None:
+        """Pick next runnable job, skipping IDs already owned by this worker.
+
+        Prefer brand-new ``queued`` work before reclaiming orphaned in-progress
+        jobs so concurrent workers are not starved (BUG-5).
+        """
         allowed = allowed or {"queued", "downloading", "uploading", "resolving", "saving"}
+        exclude_ids = exclude_ids or set()
         placeholders = ",".join("?" for _ in allowed)
+        params: list[Any] = list(allowed)
+        exclude_sql = ""
+        if exclude_ids:
+            exclude_sql = " AND id NOT IN (" + ",".join("?" for _ in exclude_ids) + ")"
+            params.extend(exclude_ids)
+        # Prefer queued first so max_concurrent_jobs>1 actually runs multiple jobs
         cur = await self.conn.execute(
             f"""
             SELECT * FROM jobs
-            WHERE status IN ({placeholders})
+            WHERE status IN ({placeholders}){exclude_sql}
             ORDER BY
               CASE status
-                WHEN 'downloading' THEN 0
-                WHEN 'uploading' THEN 0
-                WHEN 'resolving' THEN 0
-                WHEN 'saving' THEN 0
-                ELSE 1
+                WHEN 'queued' THEN 0
+                WHEN 'resolving' THEN 1
+                WHEN 'saving' THEN 1
+                WHEN 'downloading' THEN 2
+                WHEN 'uploading' THEN 2
+                ELSE 3
               END,
               id ASC
             LIMIT 1
             """,
-            tuple(allowed),
+            tuple(params),
         )
         row = await cur.fetchone()
         return dict(row) if row else None
@@ -223,9 +254,16 @@ class Database:
             fields["meta_json"] = json.dumps(fields.pop("meta"))
         if not fields:
             return
+        bad = set(fields) - self._FILE_COLS
+        if bad:
+            raise ValueError(f"invalid file fields: {bad}")
         cols = ", ".join(f"{k}=?" for k in fields)
         vals = list(fields.values()) + [file_id]
         await self.conn.execute(f"UPDATE files SET {cols} WHERE id=?", vals)
+        await self.conn.commit()
+
+    async def clear_files(self, job_id: int) -> None:
+        await self.conn.execute("DELETE FROM files WHERE job_id=?", (job_id,))
         await self.conn.commit()
 
     async def get_file(self, file_id: int) -> dict[str, Any] | None:

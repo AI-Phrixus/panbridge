@@ -7,7 +7,7 @@
 
 | | |
 |--|--|
-| **版本** | v0.3.5 |
+| **版本** | v0.3.6 |
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
 | **核心能力** | 貼連結即跑 · 斷點續傳 · 大檔 OneDrive · 串流播放 |
@@ -159,6 +159,12 @@ Dockerfile     容器
 ---
 
 ## Changelog（摘要）
+
+### v0.3.6
+- 三輪紅藍軍對抗修復：OneDrive 假成功上傳、pCloud 分片校驗、resolve 中斷丟檔、  
+  空間檢查、size 污染進度、claim 飢餓、取消上傳、token 持久化、百度分頁、  
+  路徑穿越、登入限速、SQL 欄位白名單等  
+- 對抗測試：`tests/test_adversarial_r1/r2/r3.py`
 
 ### v0.3.5
 - Worker 優雅關閉、卡死看門狗、OneDrive 上傳完整性  
