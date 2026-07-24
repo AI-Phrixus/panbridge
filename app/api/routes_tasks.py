@@ -91,7 +91,19 @@ async def system_status(_: None = Depends(require_auth)):
 @router.get("")
 async def list_tasks(_: None = Depends(require_auth)):
     jobs = await db.list_jobs(200)
-    return {"jobs": jobs}
+    # Refresh progress for active jobs so UI is not stuck at 0 after restart/queue
+    out = []
+    for j in jobs:
+        st = j.get("status") or ""
+        if st in ("queued", "downloading", "uploading", "resolving", "saving") and j.get("id"):
+            try:
+                prog = await db.recompute_job_progress(int(j["id"]))
+                j = dict(j)
+                j["progress"] = prog
+            except Exception:
+                pass
+        out.append(j)
+    return {"jobs": out}
 
 
 @router.get("/{job_id}")
@@ -100,6 +112,17 @@ async def get_task(job_id: int, _: None = Depends(require_auth)):
     if not job:
         raise HTTPException(404, "not found")
     files = await db.list_files(job_id)
+    st = job.get("status") or ""
+    if st in ("queued", "downloading", "uploading", "resolving", "saving"):
+        try:
+            prog = await db.recompute_job_progress(job_id)
+            job = dict(job)
+            job["progress"] = prog
+            counts = await db.file_status_counts(job_id)
+            job["files_done"] = int(counts.get("done") or 0)
+            job["files_total"] = sum(counts.values())
+        except Exception:
+            pass
     return {"job": job, "files": files}
 
 
@@ -114,20 +137,41 @@ async def download_local_file(job_id: int, file_id: int, _: None = Depends(requi
         raise HTTPException(400, "file not ready")
 
     settings = get_settings()
-    # Prefer stored absolute path in pcloud_fileid for LocalSink
+    # ADV-R1: only serve files under data_path (never arbitrary absolute paths)
+    data_root = settings.data_path.resolve()
+    delivered = (data_root / "delivered").resolve()
+
+    def _safe_candidate(p: Path) -> Path | None:
+        try:
+            rp = p.resolve()
+        except OSError:
+            return None
+        if not rp.is_file():
+            return None
+        if data_root not in rp.parents and rp != data_root:
+            return None
+        # prefer delivered; still allow tmp leftovers under data_path
+        return rp
+
     candidates: list[Path] = []
     if f.get("pcloud_fileid") and str(f["pcloud_fileid"]).startswith("/"):
         candidates.append(Path(f["pcloud_fileid"]))
-    rel = (f.get("pcloud_path") or f.get("relative_path") or f.get("remote_name") or "").lstrip("/")
-    if rel:
-        candidates.append(settings.data_path / "delivered" / rel)
-    # also job-based path
-    title = (job.get("title") or "").strip("/")
-    if title and f.get("relative_path"):
-        base = (job.get("pcloud_path") or settings.pcloud_default_path).strip("/")
-        candidates.append(settings.data_path / "delivered" / base / f["relative_path"])
+    from app.util_paths import sanitize_rel_path
 
-    path = next((c for c in candidates if c.exists() and c.is_file()), None)
+    rel = sanitize_rel_path(
+        f.get("pcloud_path") or f.get("relative_path") or f.get("remote_name") or ""
+    )
+    if rel:
+        candidates.append(delivered / rel)
+    if f.get("relative_path"):
+        base = sanitize_rel_path(job.get("pcloud_path") or settings.pcloud_default_path)
+        rel2 = sanitize_rel_path(f["relative_path"])
+        if base and rel2:
+            candidates.append(delivered / base / rel2)
+        elif rel2:
+            candidates.append(delivered / rel2)
+
+    path = next((c for c in (_safe_candidate(x) for x in candidates) if c is not None), None)
     if not path:
         raise HTTPException(404, "local file missing — 可能尚未下完或已清理")
 
@@ -155,13 +199,18 @@ async def create_tasks(body: CreateTaskIn, _: None = Depends(require_auth)):
             # fall through to local on the worker; still allow create
             pass
 
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "請貼上至少一個分享連結")
     try:
-        parsed_list = parse_many(body.text)
+        parsed_list = parse_many(text)
     except ValueError:
-        p = parse_share_link(body.text)
+        p = parse_share_link(text)
         if body.passcode:
             p.passcode = body.passcode
         parsed_list = [p]
+    if not parsed_list:
+        raise HTTPException(400, "未解析到有效連結（僅支援夸克 / 百度）")
 
     created = []
     for p in parsed_list:
@@ -182,12 +231,17 @@ async def create_tasks(body: CreateTaskIn, _: None = Depends(require_auth)):
 
 
 @router.post("/{job_id}/retry")
-async def retry_task(job_id: int, _: None = Depends(require_auth)):
+async def retry_task(job_id: int, request: Request, _: None = Depends(require_auth)):
     job = await db.get_job(job_id)
     if not job:
         raise HTTPException(404, "not found")
-    # Don't steal a job that is actively running
-    if job["status"] in ("downloading", "uploading", "resolving", "saving"):
+    # Don't steal a job that is actively owned by the worker
+    worker = getattr(request.app.state, "worker", None)
+    running = set(getattr(worker, "_running_jobs", set()) or set()) if worker else set()
+    if job_id in running:
+        raise HTTPException(400, "任務正在執行中，請先取消再重試")
+    # Status may still say downloading while only queued for a free slot — allow retry
+    if job["status"] in ("resolving", "saving") and job_id in running:
         raise HTTPException(400, "任務進行中，請先取消再重試，或等待完成")
     files = await db.list_files(job_id)
     for f in files:
@@ -211,7 +265,12 @@ async def cancel_task(job_id: int, request: Request, _: None = Depends(require_a
     job = await db.get_job(job_id)
     if not job:
         raise HTTPException(404, "not found")
-    await db.update_job(job_id, status="cancelled", status_detail="已取消")
+    await db.update_job(job_id, status="cancelled", status_detail="已取消", speed_bps=0)
+    # ADV-R5: mid-flight file rows left as downloading block clean retry semantics
+    files = await db.list_files(job_id)
+    for f in files:
+        if f.get("status") in ("downloading", "uploading"):
+            await db.update_file(f["id"], status="queued", error_message="")
     # BUG-11: also cancel in-flight asyncio task (upload/download)
     worker = getattr(request.app.state, "worker", None)
     if worker is not None and hasattr(worker, "request_cancel"):

@@ -11,6 +11,21 @@ from http.cookies import SimpleCookie
 import httpx
 
 _sessions: dict[str, "BaiduQRSession"] = {}
+_SESSION_TTL = 600.0
+
+
+def _purge_sessions() -> None:
+    now = time.time()
+    for sid, s in list(_sessions.items()):
+        age = now - s.created_at
+        if age > _SESSION_TTL:
+            _sessions.pop(sid, None)
+            continue
+        if s.status in ("confirmed", "expired", "error") and age > 120:
+            s.cookie = ""
+            if age > 300:
+                _sessions.pop(sid, None)
+
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -90,6 +105,7 @@ def _parse_channel_v(channel_v) -> tuple[str | None, str | None]:
 
 
 async def start_qr() -> BaiduQRSession:
+    _purge_sessions()
     async with httpx.AsyncClient(timeout=30, headers={"User-Agent": UA}) as client:
         r = await client.get(
             "https://passport.baidu.com/v2/api/getqrcode",
@@ -268,4 +284,5 @@ async def _poll(sess: BaiduQRSession) -> None:
 
 
 def get_session(sid: str) -> BaiduQRSession | None:
+    _purge_sessions()
     return _sessions.get(sid)

@@ -12,8 +12,8 @@
 | POST | `/api/auth/baidu/qr/start` | 百度掃碼開始 |
 | GET | `/api/auth/baidu/qr/{id}` | 掃碼狀態 |
 | POST | `/api/auth/baidu/cookie` | 貼 Cookie |
-| POST | `/api/auth/quark/qr/start` | 夸克掃碼 |
-| GET | `/api/auth/quark/qr/{id}` | 狀態 |
+| POST | `/api/auth/quark/qr/start` | 夸克掃碼（純 API 登錄 QR，非官網截圖） |
+| GET | `/api/auth/quark/qr/{id}` | 狀態；confirmed 後自動存 Cookie |
 | POST | `/api/auth/quark/cookie` | 貼 Cookie |
 | POST | `/api/auth/pcloud/login` | email/password/code? |
 | POST | `/api/auth/pcloud/token` | 貼 auth token |

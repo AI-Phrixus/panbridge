@@ -18,6 +18,10 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 _login_hits: dict[str, deque[float]] = defaultdict(deque)
 _LOGIN_WINDOW = 300.0  # 5 min
 _LOGIN_MAX = 20
+# QR start rate limit — external CAS / passport hammering (ADV-R1)
+_qr_hits: dict[str, deque[float]] = defaultdict(deque)
+_QR_WINDOW = 300.0
+_QR_MAX = 12
 
 
 def _rate_limit_login(ip: str) -> None:
@@ -27,6 +31,16 @@ def _rate_limit_login(ip: str) -> None:
         q.popleft()
     if len(q) >= _LOGIN_MAX:
         raise HTTPException(status_code=429, detail="too many login attempts, try later")
+    q.append(now)
+
+
+def _rate_limit_qr(key: str) -> None:
+    now = time.time()
+    q = _qr_hits[key]
+    while q and now - q[0] > _QR_WINDOW:
+        q.popleft()
+    if len(q) >= _QR_MAX:
+        raise HTTPException(status_code=429, detail="掃碼請求過於頻繁，請稍後再試")
     q.append(now)
 
 
@@ -84,7 +98,9 @@ async def me(session_ok: None = Depends(require_auth)):
 
 # ---- Baidu QR ----
 @router.post("/baidu/qr/start")
-async def baidu_qr_start(_: None = Depends(require_auth)):
+async def baidu_qr_start(request: Request, _: None = Depends(require_auth)):
+    ip = request.client.host if request.client else "unknown"
+    _rate_limit_qr(f"baidu:{ip}")
     sess = await baidu_qr.start_qr()
     return {"id": sess.id, "imgurl": sess.imgurl, "status": sess.status}
 
@@ -105,6 +121,7 @@ async def baidu_qr_status(sid: str, _: None = Depends(require_auth)):
                 "imgurl": sess.imgurl,
             }
         await db.set_credential("baidu", encrypt_json({"cookie": ck}))
+        sess.cookie = ""  # wipe secret after persist (ADV-R1)
     return {"id": sess.id, "status": sess.status, "message": sess.message, "imgurl": sess.imgurl, "debug": getattr(sess, "debug", "")}
 
 
@@ -127,9 +144,20 @@ async def baidu_cookie(body: CookieIn, _: None = Depends(require_auth)):
 
 # ---- Quark ----
 @router.post("/quark/qr/start")
-async def quark_qr_start(_: None = Depends(require_auth)):
-    sess = await quark_auth.start_playwright_login()
-    return {"id": sess.id, "status": sess.status, "message": sess.message}
+async def quark_qr_start(request: Request, _: None = Depends(require_auth)):
+    # Pure CAS API QR (not page screenshot — avoids client upgrade / download QRs)
+    ip = request.client.host if request.client else "unknown"
+    _rate_limit_qr(f"quark:{ip}")
+    sess = await quark_auth.start_qr()
+    if sess.status == "error" and not sess.qr_data_url:
+        raise HTTPException(502, sess.message or "quark qr start failed")
+    return {
+        "id": sess.id,
+        "status": sess.status,
+        "message": sess.message,
+        "qr_data_url": sess.qr_data_url,
+        "debug": getattr(sess, "debug", ""),
+    }
 
 
 @router.get("/quark/qr/{sid}")
@@ -138,19 +166,30 @@ async def quark_qr_status(sid: str, _: None = Depends(require_auth)):
     if not sess:
         raise HTTPException(404, "session not found")
     if sess.status == "confirmed" and sess.cookie:
-        await db.set_credential("quark", encrypt_json({"cookie": sess.cookie}))
+        nick = quark_auth.extract_nickname(sess.message)
+        await db.set_credential(
+            "quark",
+            encrypt_json({"cookie": sess.cookie, "nickname": nick}),
+        )
+        sess.cookie = ""  # wipe secret after persist (ADV-R1)
+        if nick and not sess.message.startswith("已登錄"):
+            sess.message = f"已登錄：{nick}"
     return {
         "id": sess.id,
         "status": sess.status,
         "message": sess.message,
         "qr_data_url": sess.qr_data_url,
+        "debug": getattr(sess, "debug", ""),
     }
 
 
 @router.post("/quark/cookie")
 async def quark_cookie(body: CookieIn, _: None = Depends(require_auth)):
-    nick = await quark_auth.validate_cookie(body.cookie.strip())
-    await db.set_credential("quark", encrypt_json({"cookie": body.cookie.strip(), "nickname": nick}))
+    ck = body.cookie.strip()
+    if len(ck) < 20:
+        raise HTTPException(400, "Cookie 過短，請貼上完整 Cookie")
+    nick = await quark_auth.validate_cookie(ck)
+    await db.set_credential("quark", encrypt_json({"cookie": ck, "nickname": nick}))
     return {"ok": True, "nickname": nick}
 
 

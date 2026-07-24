@@ -44,6 +44,7 @@ class Worker:
         self._stop = asyncio.Event()
         self._running_jobs: set[int] = set()
         self._job_tasks: dict[int, asyncio.Task] = {}
+        self._last_wait_mark: float = 0.0
 
     def start(self) -> None:
         if self._task and not self._task.done():
@@ -72,22 +73,25 @@ class Worker:
         while not self._stop.is_set():
             try:
                 await self._reap_and_watch_stale()
-                active = len(self._running_jobs)
-                if active < settings.max_concurrent_jobs:
+                await self._mark_waiting_jobs(settings.max_concurrent_jobs)
+                # Fill all free slots in one tick (ADV-R5: was only +1 per 1.5s)
+                while len(self._running_jobs) < settings.max_concurrent_jobs:
                     job = await self.db.claim_next_job(exclude_ids=set(self._running_jobs))
-                    if job and job["id"] not in self._running_jobs:
-                        if job["status"] in (
-                            "queued",
-                            "resolving",
-                            "saving",
-                            "downloading",
-                            "uploading",
-                        ):
-                            self._running_jobs.add(job["id"])
-                            t = asyncio.create_task(
-                                self._run_job_safe(job["id"]), name=f"job-{job['id']}"
-                            )
-                            self._job_tasks[job["id"]] = t
+                    if not job or job["id"] in self._running_jobs:
+                        break
+                    if job["status"] not in (
+                        "queued",
+                        "resolving",
+                        "saving",
+                        "downloading",
+                        "uploading",
+                    ):
+                        break
+                    self._running_jobs.add(job["id"])
+                    t = asyncio.create_task(
+                        self._run_job_safe(job["id"]), name=f"job-{job['id']}"
+                    )
+                    self._job_tasks[job["id"]] = t
             except Exception:
                 log.exception("worker loop error")
             try:
@@ -95,6 +99,64 @@ class Worker:
             except asyncio.TimeoutError:
                 pass
         log.info("worker stopped")
+
+    async def _mark_waiting_jobs(self, max_conc: int) -> None:
+        """Jobs left as downloading/queued but not running → show queue + live progress.
+
+        After restart/cancel, status_detail stuck on「任務中斷」and progress froze at 0
+        while other jobs held concurrent slots (user saw #4 with no progress).
+        """
+        now = time.time()
+        # Throttle: 1452-file recompute every 1.5s was wasteful (ADV-R5)
+        if now - self._last_wait_mark < 8.0:
+            return
+        self._last_wait_mark = now
+        try:
+            jobs = await self.db.list_jobs(50)
+        except Exception:
+            return
+        running = set(self._running_jobs)
+        n_run = len(running)
+        full = n_run >= max_conc
+        for j in jobs:
+            jid = int(j["id"])
+            st = j.get("status") or ""
+            if st not in ("queued", "downloading", "uploading", "resolving", "saving"):
+                continue
+            if jid in running:
+                continue
+            # not actively executing
+            try:
+                prog = await self.db.recompute_job_progress(jid)
+                counts = await self.db.file_status_counts(jid)
+                n_done = int(counts.get("done") or 0)
+                n_all = sum(counts.values())
+                slot = f"併發 {n_run}/{max_conc}"
+                if full:
+                    slot += " 已滿"
+                elif n_run > 0:
+                    slot += " · 等待空位"
+                else:
+                    slot += " · 即將開始"
+                if st == "queued" and n_all == 0:
+                    detail = f"排隊等待執行（{slot}）"
+                elif n_all:
+                    detail = f"排隊續傳中（{slot}）· 已完成 {n_done}/{n_all} 檔 · {prog:.2f}%"
+                else:
+                    detail = f"排隊等待執行（{slot}）"
+                old_detail = j.get("status_detail") or ""
+                old_prog = float(j.get("progress") or 0)
+                if old_detail != detail or abs(old_prog - prog) >= 0.01:
+                    # touch=False: do not reset updated_at (claim prefers oldest interrupt)
+                    await self.db.update_job(
+                        jid,
+                        touch=False,
+                        progress=prog,
+                        speed_bps=0,
+                        status_detail=detail,
+                    )
+            except Exception:
+                log.exception("mark waiting job %s failed", jid)
 
     async def _reap_and_watch_stale(self) -> None:
         """Drop finished task refs; force-cancel jobs with no progress for too long."""
@@ -140,12 +202,15 @@ class Worker:
         except asyncio.CancelledError:
             log.info("job %s cancelled (shutdown or stale watchdog)", job_id)
             # Keep status downloading/uploading so restart/reclaim can resume from .part
+            # ADV-R5: do NOT overwrite user cancel message with「等待自動續傳」
             try:
-                await self.db.update_job(
-                    job_id,
-                    status_detail="任務中斷，等待自動續傳…",
-                    speed_bps=0,
-                )
+                j = await self.db.get_job(job_id)
+                if j and j.get("status") != "cancelled":
+                    await self.db.update_job(
+                        job_id,
+                        status_detail="任務中斷，等待自動續傳…",
+                        speed_bps=0,
+                    )
             except Exception:
                 pass
             raise
@@ -252,6 +317,11 @@ class Worker:
         log.info("job %s destination=%s note=%s", job_id, dest, dest_note)
 
         file_errors: list[str] = []
+        # ADV-R5: stale mid-flight markers from last interrupt → re-queue (keep bytes)
+        for f in files:
+            if f.get("status") in ("downloading", "uploading"):
+                await self.db.update_file(int(f["id"]), status="queued", error_message="")
+                f["status"] = "queued"
         for f in files:
             job = await self.db.get_job(job_id)
             if job and job["status"] == "cancelled":
@@ -288,7 +358,13 @@ class Worker:
                 log.exception("job %s file %s failed", job_id, f.get("id"))
                 file_errors.append(f"{f.get('remote_name')}: {e}")
             prog = await self.db.recompute_job_progress(job_id)
-            await self.db.update_job(job_id, progress=prog)
+            snap = await self.db.list_files(job_id)
+            n_done = sum(1 for x in snap if x["status"] == "done")
+            await self.db.update_job(
+                job_id,
+                progress=prog,
+                status_detail=f"進度 {n_done}/{len(snap)} 檔案 · {prog:.2f}%",
+            )
 
         files = await self.db.list_files(job_id)
         j2 = await self.db.get_job(job_id)
@@ -732,14 +808,23 @@ class Worker:
                     # after LocalSink move, part may still exist separately
                     if not is_local or part_path.exists():
                         part_path.unlink(missing_ok=True)
-                for pattern in (f"{part_path}.segs", f"{part_path}.segments.json"):
-                    pth = Path(pattern)
-                    if pth.is_dir():
-                        for c in pth.glob("*"):
-                            c.unlink(missing_ok=True)
-                        pth.rmdir()
-                    elif pth.exists():
-                        pth.unlink(missing_ok=True)
+                # multi-range meta + legacy segment dirs
+                for extra in (
+                    Path(str(job_tmp / (local_name + ".part")) + ".ranges.json"),
+                    job_tmp / (local_name + ".part.ranges.json"),
+                    Path(str(part_path) + ".ranges.json"),
+                    Path(str(part_path) + ".segs"),
+                    Path(str(part_path) + ".segments.json"),
+                ):
+                    try:
+                        if extra.is_dir():
+                            for c in extra.glob("*"):
+                                c.unlink(missing_ok=True)
+                            extra.rmdir()
+                        elif extra.exists():
+                            extra.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             except OSError:
                 pass
         except Exception as e:

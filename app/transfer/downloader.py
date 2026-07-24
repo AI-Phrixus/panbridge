@@ -419,6 +419,24 @@ async def _parallel_range_download(
                 async with httpx.AsyncClient(timeout=_dl_timeout(), follow_redirects=True) as client:
                     async with client.stream("GET", current, headers=req) as resp:
                         if resp.status_code in (401, 403, 404, 412):
+                            # ADV-R3: hard-fail Quark CDN auth like single-stream path
+                            try:
+                                err_body = (await resp.aread())[:400].decode("utf-8", "ignore")
+                            except Exception:
+                                err_body = ""
+                            low = err_body.lower()
+                            if (
+                                resp.status_code == 412
+                                or "auth expired" in low
+                                or "require login" in low
+                                or "auth not found" in low
+                                or "requestdeniedbycallback" in low
+                            ):
+                                err = RuntimeError(
+                                    "夸克登录已失效（CDN 403/412 require login），请到设定页重新连接夸克 Cookie"
+                                )
+                                fatal_multi["err"] = err
+                                raise err
                             if url_refresh_cb:
                                 await refresh_url_if_needed()
                                 raise RuntimeError(f"download URL expired: HTTP {resp.status_code}")

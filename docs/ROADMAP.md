@@ -8,11 +8,13 @@
 
 | 項 | 狀態 | 說明 |
 |----|------|------|
-| Job #2 大檔下載 | **進行中** | 百度 → VPS `.part` → OneDrive；v0.3.7 多連線嘗試加速 |
-| 下載速度優化 | **v0.3.7 已上** | 就地多 Range；百度 4 線 / 夸克 6 線；403 回退 |
+| Job #2 百度大檔 | **進行中** | Disclosure Day → OneDrive；~12%+（快照） |
+| Job #4 夸克 1452 檔 | **排隊/續傳** | 倪海厦全集；看 N/M 檔數勿只看 0.x% |
+| Job #5 夸克 4K | **進行中** | Elite Force 季集 → OneDrive |
+| 夸克掃碼 | **v0.3.10+ 已上** | 純 API QR，無需 F12 |
+| 並發 / 排隊 UI | **v0.3.12–0.3.13** | 2 槽；中斷優先；排隊文案正確 |
 | 避免無謂重啟 | 持續 | 不為「刷新」而 `systemctl restart` |
-| 文檔可交接 | **進行中** | 公開 docs + 操作者私有 handoff |
-| GitHub 公開倉庫 | **已完成** | `AI-Phrixus/panbridge` · 待轉移新帳號時 Transfer |
+| 文檔 / GitHub | **已同步 v0.3.13** | `AI-Phrixus/panbridge` |
 
 ### P0 完成定義（Job #2）
 

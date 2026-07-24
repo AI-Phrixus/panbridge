@@ -160,13 +160,16 @@ class Database:
         "pcloud_path", "status", "error_message", "meta_json",
     })
 
-    async def update_job(self, job_id: int, **fields: Any) -> None:
+    async def update_job(self, job_id: int, touch: bool = True, **fields: Any) -> None:
+        """Update job fields. touch=False keeps updated_at (queue heartbeat must not
+        reset claim priority / look 'active' while only waiting)."""
         if not fields:
             return
         bad = set(fields) - self._JOB_COLS
         if bad:
             raise ValueError(f"invalid job fields: {bad}")
-        fields["updated_at"] = _now()
+        if touch:
+            fields["updated_at"] = _now()
         cols = ", ".join(f"{k}=?" for k in fields)
         vals = list(fields.values()) + [job_id]
         await self.conn.execute(f"UPDATE jobs SET {cols} WHERE id=?", vals)
@@ -189,8 +192,9 @@ class Database:
     ) -> dict[str, Any] | None:
         """Pick next runnable job, skipping IDs already owned by this worker.
 
-        Prefer brand-new ``queued`` work before reclaiming orphaned in-progress
-        jobs so concurrent workers are not starved (BUG-5).
+        Prefer resume of interrupted in-progress work over brand-new queued
+        (prevents partial jobs starving behind new links). exclude_ids avoids
+        double-claim within one worker process.
         """
         allowed = allowed or {"queued", "downloading", "uploading", "resolving", "saving"}
         exclude_ids = exclude_ids or set()
@@ -200,20 +204,23 @@ class Database:
         if exclude_ids:
             exclude_sql = " AND id NOT IN (" + ",".join("?" for _ in exclude_ids) + ")"
             params.extend(exclude_ids)
-        # Prefer queued first so max_concurrent_jobs>1 actually runs multiple jobs
+        # Prefer resume of in-progress work over brand-new queued (otherwise a
+        # restarted partial job sits at 0% forever while new tasks take slots).
+        # Within same priority: oldest updated_at first so interrupted jobs recover.
         cur = await self.conn.execute(
             f"""
             SELECT * FROM jobs
             WHERE status IN ({placeholders}){exclude_sql}
             ORDER BY
               CASE status
-                WHEN 'queued' THEN 0
-                WHEN 'resolving' THEN 1
-                WHEN 'saving' THEN 1
-                WHEN 'downloading' THEN 2
-                WHEN 'uploading' THEN 2
+                WHEN 'resolving' THEN 0
+                WHEN 'saving' THEN 0
+                WHEN 'downloading' THEN 1
+                WHEN 'uploading' THEN 1
+                WHEN 'queued' THEN 2
                 ELSE 3
               END,
+              updated_at ASC,
               id ASC
             LIMIT 1
             """,
@@ -276,28 +283,61 @@ class Database:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def file_status_counts(self, job_id: int) -> dict[str, int]:
+        cur = await self.conn.execute(
+            "SELECT status, COUNT(*) AS c FROM files WHERE job_id=? GROUP BY status",
+            (job_id,),
+        )
+        rows = await cur.fetchall()
+        return {str(r["status"]): int(r["c"]) for r in rows}
+
     async def recompute_job_progress(self, job_id: int) -> float:
-        """Size-weighted progress so a 26GB file is not buried by small images."""
-        files = await self.list_files(job_id)
-        if not files:
+        """Size-weighted progress (SQL) so a 26GB file is not buried by small images.
+
+        BUG-ADV-R2: pure size-weight rounds to 0.00 while dozens of small files
+        finish first — file-count floor keeps UI alive.
+        ADV-R5: avoid loading 1000+ file rows into Python on every poll.
+        """
+        cur = await self.conn.execute(
+            """
+            SELECT
+              COUNT(*) AS n_all,
+              COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) AS n_done,
+              COALESCE(SUM(CASE WHEN size > 0 THEN size ELSE 1 END), 0) AS total_w,
+              COALESCE(SUM(
+                (CASE WHEN size > 0 THEN size ELSE 1 END) * (
+                  CASE
+                    WHEN status = 'done' THEN 1.0
+                    ELSE MAX(
+                      0.0,
+                      MIN(1.0, CAST(downloaded_bytes AS REAL)
+                          / (CASE WHEN size > 0 THEN size ELSE 1 END)) * 0.7
+                      + MIN(1.0, CAST(uploaded_bytes AS REAL)
+                          / (CASE WHEN size > 0 THEN size ELSE 1 END)) * 0.3
+                    )
+                  END
+                )
+              ), 0) AS weighted
+            FROM files
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        )
+        row = await cur.fetchone()
+        if not row or int(row["n_all"] or 0) == 0:
             return 0.0
-        weighted = 0.0
-        total_w = 0.0
-        for f in files:
-            size = max(int(f["size"] or 0), 1)
-            w = float(size)
-            total_w += w
-            # download 70% weight, upload 30%
-            dl = min(1.0, int(f["downloaded_bytes"] or 0) / size)
-            ul = min(1.0, int(f["uploaded_bytes"] or 0) / size)
-            if f["status"] == "done":
-                frac = 1.0
-            else:
-                frac = max(0.0, dl * 0.7 + ul * 0.3)
-            weighted += frac * w
+        total_w = float(row["total_w"] or 0)
         if total_w <= 0:
             return 0.0
-        return round(100.0 * weighted / total_w, 2)
+        pct = 100.0 * float(row["weighted"] or 0) / total_w
+        n_done = int(row["n_done"] or 0)
+        n_all = int(row["n_all"] or 0)
+        if n_done and n_all:
+            file_pct = 100.0 * n_done / n_all
+            pct = max(pct, min(file_pct * 0.15, 15.0))
+        if 0 < pct < 0.01:
+            return 0.01
+        return round(min(100.0, pct), 2)
 
 
 db = Database()

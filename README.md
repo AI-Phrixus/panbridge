@@ -7,7 +7,7 @@
 
 | | |
 |--|--|
-| **版本** | v0.3.7 |
+| **版本** | v0.3.13 |
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
 | **核心能力** | 貼連結即跑 · 斷點續傳 · 大檔 OneDrive · 串流播放 |
@@ -160,10 +160,26 @@ Dockerfile     容器
 
 ## Changelog（摘要）
 
-### v0.3.7
+### v0.3.13
+- SQL 聚合進度（1452 檔列表不再拖慢 UI）  
+- Worker 一次填滿並發槽；排隊文案區分「已滿 / 等待空位 / 即將開始」  
+- 排隊心跳 `touch=False` 不打亂續傳優先級  
+- 取消：不覆蓋用戶「已取消」；中斷中的檔案回 `queued` 並保留已下字節  
+- 對抗測試 r5  
+
+### v0.3.11–0.3.12
+- 體積進度假 0%：檔案數地板 + 列表實時重算  
+- 中斷任務優先於新任務 claim；排隊顯示「已完成 N/M 檔」  
+
+### v0.3.9–0.3.10
+- **夸克掃碼 = 純 CAS API**（`getTokenForQrcodeLogin` + `su.quark.cn` QR）  
+- 不再截圖 pan.quark.cn（避免「下載客戶端/升級」假二維碼）  
+- 掃碼後自動換 Cookie（含 `__puus`）；Playwright 非必須  
+
+### v0.3.7–0.3.8
 - 下載加速：單檔多連線 Range **就地寫入**（不佔雙倍磁碟）  
 - 百度默認嘗試 4 連線（403 回退單線）；夸克/通用 6 連線  
-- 文檔：[docs/DOWNLOAD_SOURCES.md](docs/DOWNLOAD_SOURCES.md)（夸克 vs 百度建議）
+- 夸克 CDN 412/403 `require login` 整 job 硬失敗  
 
 ### v0.3.6
 - 三輪紅藍軍對抗修復：OneDrive 假成功上傳、pCloud 分片校驗、resolve 中斷丟檔、  

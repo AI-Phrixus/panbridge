@@ -43,19 +43,20 @@ async def test_db_field_allowlist(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_claim_prefers_queued_over_downloading(tmp_path: Path):
+async def test_claim_prefers_resume_over_new_queued(tmp_path: Path):
+    """In-progress (interrupted) jobs must resume before brand-new queued work."""
     db = Database(tmp_path / "b.db")
     await db.connect()
     j1 = await db.create_job("baidu", "https://a")
     j2 = await db.create_job("baidu", "https://b")
     await db.update_job(j1, status="downloading")
     await db.update_job(j2, status="queued")
-    # excluding j1 (running) should get j2
-    got = await db.claim_next_job(exclude_ids={j1})
+    # excluding a fake running id: resume j1 first (not starve behind new j2)
+    got = await db.claim_next_job(exclude_ids={999})
     assert got is not None
-    assert got["id"] == j2
-    # with no exclude, queued still preferred first
-    got2 = await db.claim_next_job()
+    assert got["id"] == j1
+    # if j1 is already running, pick queued j2
+    got2 = await db.claim_next_job(exclude_ids={j1})
     assert got2 is not None
     assert got2["id"] == j2
     await db.close()

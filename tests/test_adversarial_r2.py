@@ -68,5 +68,7 @@ async def test_resolve_clear_on_partial_state(tmp_path: Path):
 
 
 def test_version_bumped():
+    from packaging.version import Version
     from app.config import Settings
-    assert Settings().app_version >= "0.3.6"
+
+    assert Version(Settings().app_version) >= Version("0.3.6")

@@ -77,15 +77,15 @@
 
     <div class="card stack">
       <h2>夸克網盤</h2>
-      <p class="muted">優先：掃碼（Playwright 截圖）。若環境無瀏覽器依賴，可改貼 Cookie。</p>
+      <p class="muted">與百度相同：點按鈕 → 手機夸克 App <b>掃畫面上的登錄二維碼</b> → 自動提取 Cookie（無需 F12）。若看到「下載客戶端/升級」字樣請刷新重試。Cookie 過期導致下載 403/412 時也請重新掃碼。</p>
       <div class="actions">
         <button id="qk-qr">開始掃碼登錄</button>
         <button class="secondary" id="qk-clear">清除夸克憑證</button>
       </div>
-      <div id="qk-qrbox" class="qrbox" style="display:none;margin-top:12px"><img id="qk-img" alt="quark qr" /></div>
+      <div id="qk-qrbox" class="qrbox" style="display:none;margin-top:12px"><img id="qk-img" alt="quark login qr" style="max-width:220px;background:#fff;padding:12px;border-radius:8px" /></div>
       <p id="qk-status" class="muted"></p>
-      <label>或貼上 Cookie</label>
-      <textarea id="qk-cookie" placeholder="從 pan.quark.cn 開發者工具複製 Cookie"></textarea>
+      <label>備用：手動貼 Cookie（一般不用）</label>
+      <textarea id="qk-cookie" placeholder="僅在掃碼不可用時，才從 pan.quark.cn 複製完整 Cookie"></textarea>
       <div class="actions"><button class="secondary" id="qk-cookie-save">保存 Cookie</button></div>
       <p id="qk-msg"></p>
     </div>
@@ -135,19 +135,36 @@
     };
     let qkTimer=null;
     $('#qk-qr').onclick = async () => {
+      $('#qk-msg').innerHTML = '';
+      $('#qk-status').textContent = '正在取得登錄二維碼…';
+      $('#qk-qrbox').style.display = 'none';
       const r = await fetch('/api/auth/quark/qr/start', {method:'POST'});
-      const d = await r.json();
-      $('#qk-status').textContent = '狀態: '+d.status;
+      const d = await r.json().catch(()=>({}));
+      if (!r.ok) {
+        let err = d.detail || d.message || r.statusText;
+        if (Array.isArray(err)) err = err.map(x => x.msg || JSON.stringify(x)).join('; ');
+        $('#qk-status').innerHTML = '<span class="err">'+err+'</span>';
+        return;
+      }
+      // API 直接返回真正登錄 QR（不再截取官網升級/下載碼）
+      if (d.qr_data_url){ $('#qk-qrbox').style.display='inline-block'; $('#qk-img').src=d.qr_data_url; }
+      $('#qk-status').textContent = '狀態: '+(d.status||'pending')+' '+(d.message||'');
       if (qkTimer) clearInterval(qkTimer);
       qkTimer = setInterval(async ()=>{
-        const s = await (await fetch('/api/auth/quark/qr/'+d.id)).json();
-        $('#qk-status').textContent = '狀態: '+s.status+' '+(s.message||'');
+        const s = await (await fetch('/api/auth/quark/qr/'+d.id)).json().catch(()=>({}));
+        $('#qk-status').textContent = '狀態: '+(s.status||'')+' '+(s.message||'')+(s.debug?(' · '+s.debug):'');
         if (s.qr_data_url){ $('#qk-qrbox').style.display='inline-block'; $('#qk-img').src=s.qr_data_url; }
         if (s.status==='confirmed'||s.status==='error'||s.status==='expired'){
           clearInterval(qkTimer); refreshProviders();
-          if (s.status==='confirmed') $('#qk-msg').innerHTML='<span class="ok">夸克已登錄</span>';
+          if (s.status==='confirmed') {
+            $('#qk-msg').innerHTML='<span class="ok">夸克已登錄（Cookie 已自動保存）· 請回去重試失敗的夸克任務</span>';
+          } else if (s.status==='error') {
+            $('#qk-msg').innerHTML='<span class="err">'+(s.message||'掃碼失敗')+'</span>';
+          } else {
+            $('#qk-msg').innerHTML='<span class="err">掃碼超時，請再點一次</span>';
+          }
         }
-      }, 2000);
+      }, 1500);
     };
     $('#qk-cookie-save').onclick = async ()=>{
       const r = await fetch('/api/auth/quark/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:$('#qk-cookie').value})});
