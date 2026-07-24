@@ -7,7 +7,7 @@
 
 | | |
 |--|--|
-| **版本** | v0.3.6 |
+| **版本** | v0.3.7 |
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
 | **核心能力** | 貼連結即跑 · 斷點續傳 · 大檔 OneDrive · 串流播放 |
@@ -159,6 +159,11 @@ Dockerfile     容器
 ---
 
 ## Changelog（摘要）
+
+### v0.3.7
+- 下載加速：單檔多連線 Range **就地寫入**（不佔雙倍磁碟）  
+- 百度默認嘗試 4 連線（403 回退單線）；夸克/通用 6 連線  
+- 文檔：[docs/DOWNLOAD_SOURCES.md](docs/DOWNLOAD_SOURCES.md)（夸克 vs 百度建議）
 
 ### v0.3.6
 - 三輪紅藍軍對抗修復：OneDrive 假成功上傳、pCloud 分片校驗、resolve 中斷丟檔、  

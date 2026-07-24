@@ -18,13 +18,15 @@ class Settings(BaseSettings):
     max_concurrent_jobs: int = 1
     download_chunk_size: int = 1_048_576
     # Multi-connection download (auto-fallback if server rejects Range)
-    download_connections: int = 4
+    download_connections: int = 6
+    # Baidu: try multi Range with LogStatistic; falls back to 1 on 403
+    baidu_download_connections: int = 4
     # Keep free space buffer when downloading (bytes)
     disk_reserve_bytes: int = 2 * 1024 * 1024 * 1024
     pcloud_api_host: str = "eapi.pcloud.com"
     pcloud_default_path: str = "/PanBridge"
     session_max_age: int = 60 * 60 * 24 * 30
-    app_version: str = "0.3.6"
+    app_version: str = "0.3.7"
 
     @property
     def data_path(self) -> Path:

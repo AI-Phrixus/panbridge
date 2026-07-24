@@ -9,6 +9,7 @@
 | [DEPLOY.md](./DEPLOY.md) | 從零部署或搬遷 |
 | [OPERATIONS.md](./OPERATIONS.md) | 日常重啟、升級、清盤、監看下載 |
 | [API.md](./API.md) | 調 API / 寫腳本 |
+| [DOWNLOAD_SOURCES.md](./DOWNLOAD_SOURCES.md) | **夸克 vs 百度**、速度策略 |
 
 根目錄 [README.md](../README.md) 是專案總覽與快速開始。
 

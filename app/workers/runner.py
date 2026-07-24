@@ -483,9 +483,12 @@ class Worker:
                 url = await source.prepare_download(sf, share_meta)
                 await self.db.update_file(file_id, download_url=url)
 
-                # Baidu often rejects multi-Range (403); use single stream for baidu
+                # Speed: multi Range in-place (disk-safe). Baidu may 403 → auto fallback single.
                 src_name = type(source).__name__.lower()
-                conns = 1 if "baidu" in src_name else settings.download_connections
+                if "baidu" in src_name:
+                    conns = max(1, min(8, int(getattr(settings, "baidu_download_connections", 4) or 4)))
+                else:
+                    conns = max(1, min(8, settings.download_connections))
 
                 speed_state = {"t0": time.monotonic(), "b0": 0, "last": 0.0}
                 cancel_flag = {"cancelled": False}

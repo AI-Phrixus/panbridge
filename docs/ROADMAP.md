@@ -8,7 +8,8 @@
 
 | 項 | 狀態 | 說明 |
 |----|------|------|
-| Job #2 大檔下載 | **進行中** | 百度 → VPS `.part` → 稍後 OneDrive；限速下可能很久 |
+| Job #2 大檔下載 | **進行中** | 百度 → VPS `.part` → OneDrive；v0.3.7 多連線嘗試加速 |
+| 下載速度優化 | **v0.3.7 已上** | 就地多 Range；百度 4 線 / 夸克 6 線；403 回退 |
 | 避免無謂重啟 | 持續 | 不為「刷新」而 `systemctl restart` |
 | 文檔可交接 | **進行中** | 公開 docs + 操作者私有 handoff |
 | GitHub 公開倉庫 | **已完成** | `AI-Phrixus/panbridge` · 待轉移新帳號時 Transfer |
