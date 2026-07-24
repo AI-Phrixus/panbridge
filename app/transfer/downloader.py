@@ -245,6 +245,9 @@ async def _single_stream_download(
             return part
         except RuntimeError as e:
             msg = str(e).lower()
+            # hard cookie/login failures — never spin refresh forever
+            if "登录已失效" in str(e) or "require login" in msg or "auth expired" in msg:
+                raise
             if any(x in msg for x in ("expired", "forbidden", "403", "401", "404", "412")):
                 if url_refresh_cb:
                     try:
