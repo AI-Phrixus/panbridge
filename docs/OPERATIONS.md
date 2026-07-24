@@ -21,6 +21,7 @@ curl -s http://127.0.0.1:8080/api/health
 - UI：`/` 列表、`/tasks/{id}` 詳情  
 - 失敗：點「重試」（進行中不可重試，需先取消）  
 - 取消：狀態 cancelled；下載會在下一次進度回呼中斷  
+- 公開狀態摘要：[STATUS.md](./STATUS.md)
 
 ### CLI 查 DB
 
@@ -32,6 +33,32 @@ con.row_factory = sqlite3.Row
 print([dict(r) for r in con.execute("SELECT id,status,progress,destination,status_detail FROM jobs ORDER BY id")])
 PY
 ```
+
+### 監看大檔是否在下載（最可靠）
+
+```bash
+# 兩次間隔 30–60 秒，size 變大 = 健康
+ls -lh /home/ubuntu/panbridge/data/tmp/2/
+sleep 30
+ls -lh /home/ubuntu/panbridge/data/tmp/2/
+```
+
+或：
+
+```bash
+watch -n 30 'ls -lh /home/ubuntu/panbridge/data/tmp/2/ 2>/dev/null; curl -s localhost:8080/api/health'
+```
+
+**不要**只看總進度 0.x% 就判定卡死（24GB 檔在 80KB/s 時百分比半天幾乎不動是正常的）。
+
+### 何時才重啟服務
+
+| 情況 | 建議 |
+|------|------|
+| `.part` 持續增長 | **不要** restart |
+| 部署新程式碼 | 可 restart（會斷流但續傳） |
+| `.part` 15 分鐘完全不動 + 日誌無進展 | 可 restart 一次並驗證續傳 |
+| 改 `.env` / secret | 需 restart（可能要重登網盤） |
 
 ## 升級程式
 

@@ -26,7 +26,7 @@
 |------|-----|
 | 公網 IP | `152.70.86.29` |
 | 區域 | Oracle Cloud · Osaka（建議亞太） |
-| 實例 | 典型 E2.1.Micro / aarch64 / ~50GB 盤 |
+| 實例 | Oracle Free 小規格 / **x86_64**（以 `uname -m` 為準）/ ~50GB 盤 |
 | SSH | `ssh ubuntu@152.70.86.29`（用你 OCI 的私鑰） |
 | 程式目錄 | `/home/ubuntu/panbridge` |
 | 資料目錄 | `/home/ubuntu/panbridge/data`（DB + 暫存，**勿當 git 倉庫**） |
@@ -83,21 +83,20 @@ sudo cat /home/ubuntu/panbridge/.env
 
 ---
 
-## 3. 交接當下任務狀態（2026-07-24 快照）
+## 3. 交接當下任務狀態
 
-> 以伺服器當下為準；接手後請再查一次。
+> **權威快照（可公開、會迭代）**：[STATUS.md](./STATUS.md)  
+> 以下為摘要；接手後**必須**再查實時數據。
 
 | Job | 狀態 | 說明 |
 |-----|------|------|
 | #1 | `done` | 夸克測試任務 |
-| #2 | `downloading` → 目標 **onedrive** | 百度分享「揭秘日 / Disclosure Day」約 **24.8 GB** mkv |
+| #2 | `downloading` → **onedrive** | 百度「揭秘日 / Disclosure Day」· 主檔 **~24.83 GB** |
 
-- 大檔 id=6：`.part` 在  
-  `data/tmp/2/6_Disclosure Day ....mkv.part`  
-- 小圖（backdrop 等）部分已 `done` 並上傳 OneDrive  
-- 剩餘：大 mkv 下完 → 上傳 OD → 字幕/海報等 queued 檔  
-
-查詢：
+- 大檔 id=6：`.part` 在 `data/tmp/2/6_*.mkv.part`  
+- 快照量級：已下約 **數百 MB**（見 STATUS）；百度限速下可能需 **很長時間**  
+- 小圖部分已 `done`；字幕/其餘 `queued`  
+- **不要**無故 restart；**不要**刪 `.part`
 
 ```bash
 python3 - <<'PY'
@@ -111,10 +110,9 @@ for r in con.execute(
     print(dict(r))
 PY
 ls -lh /home/ubuntu/panbridge/data/tmp/2/
+# 隔 30–60s 再 ls，確認 size 在增長
 df -h /
 ```
-
-**不要隨意 `rm` `.part`**，否則會從頭下載。
 
 ---
 
@@ -251,23 +249,37 @@ watch -n 5 'ls -lh /home/ubuntu/panbridge/data/tmp/2/'
 
 ## 10. 新 GitHub 帳號接手 checklist
 
-- [ ] Clone 本倉庫  
-- [ ] 確認能 SSH 到 `ubuntu@152.70.86.29`（OCI 金鑰轉到新筆電）  
-- [ ] 在 VPS 上 `curl` health、看 job #2 進度  
-- [ ] 登入 UI，確認設定頁仍顯示百度/夸克/OD/pCloud 已連  
-- [ ] （可選）把本 repo 的 remote 改到新帳號 org/user  
-- [ ] （可選）輪換 `ADMIN_PASSWORD`（改 `.env` 後 restart）  
+- [ ] Clone 本倉庫：`https://github.com/AI-Phrixus/panbridge`（或轉移後的新 URL）  
+- [ ] 讀 [STATUS.md](./STATUS.md) + 本文件  
+- [ ] 確認能 SSH 到 `ubuntu@152.70.86.29`（OCI 私鑰轉到新筆電）  
+- [ ] `curl` health、看 job #2 / `.part` 是否增長  
+- [ ] 登入 UI，確認設定頁帳號仍連線  
+- [ ] 向操作者索取**本機私有交接文**（含口令；**不在 GitHub**）  
+- [ ] （可選）Transfer / 改 remote 到新 GitHub 帳號  
+- [ ] （可選）輪換 `ADMIN_PASSWORD`（改 VPS `.env` 後 restart——**會斷當前下載**）  
 - [ ] **不要**把 `.env` 或 `data/app.db` 推上 GitHub  
 
 ### 把 repo 轉到新 GitHub 帳號
 
 ```bash
-# 在新帳號建立空倉庫 panbridge 後：
+# 方式 A：GitHub 網頁 Settings → Transfer ownership（推薦，保留 history）
+
+# 方式 B：新帳號空倉庫後
 git remote set-url origin git@github.com:NEW_USER/panbridge.git
 git push -u origin main
 ```
 
-或用 GitHub「Transfer repository」把整個 repo 轉給新帳號（保留 issues/history）。
+**VPS 與 GitHub 無關**：換帳號不必動 `/home/ubuntu/panbridge/data`。
+
+### 給下一任 AI 的最小提示（公開部分）
+
+```text
+公開倉庫：https://github.com/AI-Phrixus/panbridge
+先讀 docs/HANDOFF.md、docs/STATUS.md、docs/OPERATIONS.md
+生產：ubuntu@152.70.86.29 · 服務 panbridge · 進行中 job2 大檔勿亂 restart
+密鑰：操作者會另行提供私有交接文（不在 repo 內）
+當前目標：【填寫】
+```
 
 ---
 
@@ -276,6 +288,8 @@ git push -u origin main
 | 文件 | 內容 |
 |------|------|
 | [README.md](../README.md) | 專案總覽、快速開始 |
+| [STATUS.md](./STATUS.md) | **生產狀態快照（迭代）** |
+| [ROADMAP.md](./ROADMAP.md) | 當前計劃與優先級 |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 模組與資料流 |
 | [DEPLOY.md](./DEPLOY.md) | 從零部署 Oracle / Docker |
 | [OPERATIONS.md](./OPERATIONS.md) | 日常運維、備份、升級 |
@@ -288,4 +302,5 @@ git push -u origin main
 - 使用者語言偏好：**繁體中文** UI  
 - 偏好目標：大檔 → **OneDrive 5T**；小檔可 pCloud  
 - 部署區：Oracle **Osaka** free tier  
-- 歷史痛點：整晚下載假死（已修 timeout）、pCloud 空間不足、百度 403（LogStatistic UA）
+- 歷史痛點：整晚下載假死（已修 timeout）、pCloud 空間不足、百度 403（LogStatistic UA）  
+- 公開 repo 擁有者（寫文時）：`AI-Phrixus` · 計畫轉移到新帳號

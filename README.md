@@ -11,8 +11,14 @@
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
 | **核心能力** | 貼連結即跑 · 斷點續傳 · 大檔 OneDrive · 串流播放 |
+| **倉庫** | https://github.com/AI-Phrixus/panbridge |
 
-> 新人接手請先讀：**[docs/HANDOFF.md](docs/HANDOFF.md)**（含生產 IP、路徑、任務狀態、密鑰位置）。
+> **新人接手請先讀**  
+> 1. [docs/HANDOFF.md](docs/HANDOFF.md) — 生產環境與交接 checklist  
+> 2. [docs/STATUS.md](docs/STATUS.md) — 當前任務/服務快照  
+> 3. [docs/ROADMAP.md](docs/ROADMAP.md) — 優先級計劃  
+>  
+> 管理口令與加密密鑰**不在本倉庫**（只在 VPS `.env` / 操作者私有交接文）。
 
 ---
 
@@ -70,13 +76,15 @@ pytest -q
 
 ---
 
-## 生產部署
+## 生產部署與交接
 
 | 文件 | 內容 |
 |------|------|
-| **[docs/HANDOFF.md](docs/HANDOFF.md)** | **交接必讀**：現有 Oracle 實例、SSH、任務 #2、密鑰 |
+| **[docs/HANDOFF.md](docs/HANDOFF.md)** | **交接必讀**：Oracle 實例、SSH、任務、密鑰**位置** |
+| **[docs/STATUS.md](docs/STATUS.md)** | **生產狀態快照**（job 進度、注意事項） |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | P0/P1/P2 計劃 |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | 從零 Ubuntu / Docker / 備份 |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 重啟、升級、清盤、排障 |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 重啟、升級、清盤、監看下載 |
 | [docs/API.md](docs/API.md) | HTTP API |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 模組與資料流 |
 
