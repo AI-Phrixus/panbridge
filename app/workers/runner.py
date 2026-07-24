@@ -272,6 +272,18 @@ class Worker:
                         job_id, status="cancelled", status_detail="已取消", speed_bps=0
                     )
                     return
+                # Cookie/login hard-fail: abort job so user re-auths once (not 1452 times)
+                es = str(e)
+                if "登录已失效" in es or "require login" in es.lower() or "auth expired" in es.lower():
+                    log.error("job %s auth hard-fail: %s", job_id, e)
+                    await self.db.update_job(
+                        job_id,
+                        status="failed",
+                        error_message=es[:2000],
+                        status_detail="帳號登入失效 · 請到設定頁重新連接後重試",
+                        speed_bps=0,
+                    )
+                    return
                 # Per-file failure must not abort the whole job (remaining files still process)
                 log.exception("job %s file %s failed", job_id, f.get("id"))
                 file_errors.append(f"{f.get('remote_name')}: {e}")
