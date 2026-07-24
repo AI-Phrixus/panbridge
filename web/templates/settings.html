@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Settings · PanBridge</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">Pan<span>Bridge</span></div>
+      <nav>
+        <a href="/">任務</a>
+        <a href="/settings">帳號設定</a>
+      </nav>
+    </header>
+
+    <div class="card">
+      <h2>已連接帳號</h2>
+      <div id="providers" class="muted">載入中…</div>
+    </div>
+
+    <div class="card stack">
+      <h2>pCloud</h2>
+      <p class="muted">使用 pCloud 帳號密碼取得 auth token（加密存於本機 data）。歐盟用 eapi.pcloud.com，美國用 api.pcloud.com。</p>
+      <div class="row">
+        <div><label>Email</label><input id="pc-email" type="email" /></div>
+        <div><label>Password</label><input id="pc-pass" type="password" /></div>
+      </div>
+      <label>两步验证码 2FA（若 pCloud 开启了验证器则必填，6 位数字）</label>
+      <input id="pc-code" inputmode="numeric" autocomplete="one-time-code" placeholder="未开启 2FA 可留空" />
+      <label>API Host</label>
+      <select id="pc-host">
+        <option value="eapi.pcloud.com">eapi.pcloud.com (EU)</option>
+        <option value="api.pcloud.com">api.pcloud.com (US)</option>
+      </select>
+      <div class="actions"><button id="pc-save">連接 pCloud</button></div>
+      <p id="pc-msg"></p>
+    </div>
+
+
+    <div class="card stack">
+      <h2>pCloud — 推荐：粘贴 auth token（适合开了 2FA）</h2>
+      <p class="muted">网页能登录但密码+验证码 API 失败时用此法。步骤：① 浏览器打开
+      <a href="https://my.pcloud.com/" target="_blank" rel="noopener">my.pcloud.com</a> 并登录
+      ② 按 F12 → Network（网络）③ 刷新页面 ④ 点任意发往 api.pcloud.com / eapi.pcloud.com 的请求
+      ⑤ 在 URL 或 Form Data 里找到 <b>auth=</b> 后面那一长串，复制整段 token 粘贴下方。</p>
+      <label>auth token</label>
+      <textarea id="pc-token" placeholder="很长的一串字符，不要带 auth="></textarea>
+      <label>API Host（不确定选 US 即可）</label>
+      <select id="pc-token-host">
+        <option value="api.pcloud.com">api.pcloud.com (US)</option>
+        <option value="eapi.pcloud.com">eapi.pcloud.com (EU)</option>
+      </select>
+      <div class="actions"><button id="pc-token-save">用 Token 连接 pCloud</button></div>
+      <p id="pc-token-msg"></p>
+    </div>
+
+
+    <div class="card stack">
+      <h2>OneDrive（微軟雲盤 · 推薦大文件）</h2>
+      <p class="muted">使用 Azure 應用程式的「用戶端識別碼」+ 裝置碼登入。適合 5T 大容量，無需公網 HTTPS 回調。</p>
+      <label>應用程式 (用戶端) 識別碼 Client ID</label>
+      <input id="od-client" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="7f83b249-f46b-4641-8e8e-c9e2897d9245" />
+      <div class="actions">
+        <button id="od-start">開始裝置碼登入 OneDrive</button>
+        <button class="secondary" id="od-clear">清除 OneDrive 憑證</button>
+      </div>
+      <div id="od-box" class="card" style="display:none;margin-top:12px;background:var(--bg)">
+        <p>1. 用瀏覽器打開：<a id="od-uri" href="#" target="_blank" rel="noopener"></a></p>
+        <p>2. 輸入代碼：<b id="od-code" style="font-size:1.4rem;letter-spacing:.1em"></b></p>
+        <p class="muted" id="od-msg">等待你在瀏覽器完成登入…</p>
+      </div>
+      <p id="od-status"></p>
+    </div>
+
+    <div class="card stack">
+      <h2>夸克網盤</h2>
+      <p class="muted">優先：掃碼（Playwright 截圖）。若環境無瀏覽器依賴，可改貼 Cookie。</p>
+      <div class="actions">
+        <button id="qk-qr">開始掃碼登錄</button>
+        <button class="secondary" id="qk-clear">清除夸克憑證</button>
+      </div>
+      <div id="qk-qrbox" class="qrbox" style="display:none;margin-top:12px"><img id="qk-img" alt="quark qr" /></div>
+      <p id="qk-status" class="muted"></p>
+      <label>或貼上 Cookie</label>
+      <textarea id="qk-cookie" placeholder="從 pan.quark.cn 開發者工具複製 Cookie"></textarea>
+      <div class="actions"><button class="secondary" id="qk-cookie-save">保存 Cookie</button></div>
+      <p id="qk-msg"></p>
+    </div>
+
+    <div class="card stack">
+      <h2>百度網盤</h2>
+      <p class="muted">手機百度 App 掃碼。海外無 SVIP 下載可能很慢，斷點續傳可扛中斷。</p>
+      <div class="actions">
+        <button id="bd-qr">開始掃碼登錄</button>
+        <button class="secondary" id="bd-clear">清除百度憑證</button>
+      </div>
+      <div id="bd-qrbox" class="qrbox" style="display:none;margin-top:12px"><img id="bd-img" alt="baidu qr" /></div>
+      <p id="bd-status" class="muted"></p>
+      <label>或貼上 Cookie（需含 BDUSS）</label>
+      <textarea id="bd-cookie" placeholder="BDUSS=...; STOKEN=..."></textarea>
+      <div class="actions"><button class="secondary" id="bd-cookie-save">保存 Cookie</button></div>
+      <p id="bd-msg"></p>
+    </div>
+  </div>
+  <script>
+    const $ = s => document.querySelector(s);
+    async function refreshProviders(){
+      const r = await fetch('/api/auth/me');
+      if (r.status===401){ location.href='/login'; return; }
+      const data = await r.json();
+      const list = data.providers||[];
+      $('#providers').innerHTML = list.length
+        ? '<ul>'+list.map(p=>`<li><b>${p.provider}</b> · 更新於 ${p.updated_at}</li>`).join('')+'</ul>'
+        : '尚未連接任何帳號';
+    }
+    $('#pc-save').onclick = async () => {
+      const payload = {
+        email: $('#pc-email').value.trim(),
+        password: $('#pc-pass').value,
+        api_host: $('#pc-host').value,
+        code: ($('#pc-code') && $('#pc-code').value) ? $('#pc-code').value.trim() : ''
+      };
+      const r = await fetch('/api/auth/pcloud/login', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const d = await r.json().catch(()=>({}));
+      let err = d.detail || d.message || 'failed';
+      if (Array.isArray(err)) err = err.map(x => x.msg || JSON.stringify(x)).join('; ');
+      $('#pc-msg').innerHTML = r.ok ? '<span class="ok">pCloud 已連接</span>' : `<span class="err">${err}</span>`;
+      refreshProviders();
+    };
+    let qkTimer=null;
+    $('#qk-qr').onclick = async () => {
+      const r = await fetch('/api/auth/quark/qr/start', {method:'POST'});
+      const d = await r.json();
+      $('#qk-status').textContent = '狀態: '+d.status;
+      if (qkTimer) clearInterval(qkTimer);
+      qkTimer = setInterval(async ()=>{
+        const s = await (await fetch('/api/auth/quark/qr/'+d.id)).json();
+        $('#qk-status').textContent = '狀態: '+s.status+' '+(s.message||'');
+        if (s.qr_data_url){ $('#qk-qrbox').style.display='inline-block'; $('#qk-img').src=s.qr_data_url; }
+        if (s.status==='confirmed'||s.status==='error'||s.status==='expired'){
+          clearInterval(qkTimer); refreshProviders();
+          if (s.status==='confirmed') $('#qk-msg').innerHTML='<span class="ok">夸克已登錄</span>';
+        }
+      }, 2000);
+    };
+    $('#qk-cookie-save').onclick = async ()=>{
+      const r = await fetch('/api/auth/quark/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:$('#qk-cookie').value})});
+      const d = await r.json().catch(()=>({}));
+      $('#qk-msg').innerHTML = r.ok ? `<span class="ok">OK ${d.nickname||''}</span>` : `<span class="err">${d.detail||'fail'}</span>`;
+      refreshProviders();
+    };
+    $('#qk-clear').onclick = async ()=>{ await fetch('/api/auth/quark',{method:'DELETE'}); refreshProviders(); };
+    let bdTimer=null;
+    $('#bd-qr').onclick = async ()=>{
+      const r = await fetch('/api/auth/baidu/qr/start',{method:'POST'});
+      const d = await r.json();
+      if (d.imgurl){ $('#bd-qrbox').style.display='inline-block'; $('#bd-img').src=d.imgurl; }
+      $('#bd-status').textContent = '狀態: '+d.status;
+      if (bdTimer) clearInterval(bdTimer);
+      bdTimer = setInterval(async ()=>{
+        const s = await (await fetch('/api/auth/baidu/qr/'+d.id)).json();
+        $('#bd-status').textContent = '状态: '+s.status+' '+(s.message||'')+(s.debug?(' | '+s.debug):'');
+        if (s.imgurl){ $('#bd-img').src=s.imgurl; }
+        if (s.status==='confirmed'||s.status==='expired'||s.status==='error'){
+          clearInterval(bdTimer); refreshProviders();
+          if (s.status==='confirmed') $('#bd-msg').innerHTML='<span class="ok">百度已登錄</span>';
+        }
+      }, 2000);
+    };
+    $('#bd-cookie-save').onclick = async ()=>{
+      const r = await fetch('/api/auth/baidu/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:$('#bd-cookie').value})});
+      const d = await r.json().catch(()=>({}));
+      $('#bd-msg').innerHTML = r.ok ? '<span class="ok">已保存</span>' : `<span class="err">${d.detail||'fail'}</span>`;
+      refreshProviders();
+    };
+    $('#bd-clear').onclick = async ()=>{ await fetch('/api/auth/baidu',{method:'DELETE'}); refreshProviders(); };
+
+    $('#pc-token-save').onclick = async () => {
+      const r = await fetch('/api/auth/pcloud/token', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ auth: $('#pc-token').value.trim(), api_host: $('#pc-token-host').value })
+      });
+      const d = await r.json().catch(()=>({}));
+      let err = d.detail || 'failed';
+      if (Array.isArray(err)) err = err.map(x => x.msg || JSON.stringify(x)).join('; ');
+      $('#pc-token-msg').innerHTML = r.ok ? '<span class="ok">pCloud 已連接（token）</span>' : `<span class="err">${err}</span>`;
+      refreshProviders();
+    };
+
+
+    let odTimer = null;
+    $('#od-start').onclick = async () => {
+      const client_id = ($('#od-client').value || '').trim();
+      if (!client_id) { $('#od-status').innerHTML = '<span class="err">請填 Client ID</span>'; return; }
+      await fetch('/api/auth/onedrive/client_id', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({client_id})});
+      const r = await fetch('/api/auth/onedrive/device/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({client_id})});
+      const d = await r.json().catch(()=>({}));
+      if (!r.ok) { $('#od-status').innerHTML = '<span class="err">'+(d.detail||'failed')+'</span>'; return; }
+      $('#od-box').style.display = 'block';
+      $('#od-uri').href = d.verification_uri;
+      $('#od-uri').textContent = d.verification_uri;
+      $('#od-code').textContent = d.user_code;
+      $('#od-msg').textContent = d.message || '請完成瀏覽器登入';
+      if (odTimer) clearInterval(odTimer);
+      odTimer = setInterval(async () => {
+        const s = await (await fetch('/api/auth/onedrive/device/'+d.id)).json();
+        $('#od-msg').textContent = (s.message || s.status || '');
+        if (s.status === 'confirmed') {
+          clearInterval(odTimer);
+          $('#od-status').innerHTML = '<span class="ok">OneDrive 已連接</span>';
+          refreshProviders();
+        }
+        if (s.status === 'error' || s.status === 'expired') {
+          clearInterval(odTimer);
+          $('#od-status').innerHTML = '<span class="err">'+(s.message||s.status)+'</span>';
+        }
+      }, 4000);
+    };
+    $('#od-clear').onclick = async () => {
+      await fetch('/api/auth/onedrive', {method:'DELETE'});
+      await fetch('/api/auth/onedrive_app', {method:'DELETE'});
+      refreshProviders();
+      $('#od-status').textContent = '已清除';
+    };
+
+    refreshProviders();
+  </script>
+</body>
+</html>

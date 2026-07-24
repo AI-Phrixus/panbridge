@@ -1,0 +1,40 @@
+# Secrets & local data — NEVER commit
+.env
+.env.local
+.env.*.local
+data/
+*.db
+*.db-wal
+*.db-shm
+*.part
+*.segs/
+*.segments.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Playwright / logs
+playwright-report/
+test-results/
+*.log

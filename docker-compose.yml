@@ -1,0 +1,23 @@
+services:
+  panbridge:
+    build: .
+    container_name: panbridge
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /data
+      HOST: 0.0.0.0
+      PORT: 8080
+    volumes:
+      - panbridge-data:/data
+    # Uncomment for larger / concurrent transfers:
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G
+
+volumes:
+  panbridge-data:

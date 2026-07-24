@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>任務 · PanBridge</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">Pan<span>Bridge</span></div>
+      <nav>
+        <a href="/">← 任務列表</a>
+        <a href="/settings">帳號設定</a>
+      </nav>
+    </header>
+    <div class="card">
+      <h2>任務 #<span id="jid">{{ job_id }}</span></h2>
+      <div id="meta" class="muted"></div>
+      <div class="actions" id="jobActions"></div>
+      <div id="err" class="err"></div>
+    </div>
+    <div class="card">
+      <h3>檔案</h3>
+      <table>
+        <thead>
+          <tr><th>路徑</th><th>大小</th><th>下載</th><th>上傳</th><th>狀態</th><th>操作</th></tr>
+        </thead>
+        <tbody id="files"></tbody>
+      </table>
+    </div>
+  </div>
+  <script>
+    const jobId = {{ job_id }};
+    function fmt(n){
+      n = Number(n)||0;
+      if (n < 1024) return n+' B';
+      if (n < 1048576) return (n/1024).toFixed(1)+' KB';
+      if (n < 1073741824) return (n/1048576).toFixed(1)+' MB';
+      return (n/1073741824).toFixed(2)+' GB';
+    }
+    function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    async function openLocation(jobId, fileId){
+      try {
+        const r = await fetch('/api/tasks/'+jobId+'/files/'+fileId+'/location');
+        const d = await r.json().catch(()=>({}));
+        if (!r.ok) { alert(d.detail || '無法取得位置'); return; }
+        const url = d.url || d.folder_url;
+        if (!url) { alert('尚無雲端位置（可能還未上傳完成）'); return; }
+        window.open(url, '_blank', 'noopener');
+      } catch (e) { alert(String(e)); }
+    }
+    async function openJobFolder(){
+      try {
+        const r = await fetch('/api/tasks/'+jobId+'/location');
+        const d = await r.json().catch(()=>({}));
+        if (!r.ok) { alert(d.detail || '無法開啟資料夾'); return; }
+        const url = d.url || d.folder_url;
+        if (url) window.open(url, '_blank', 'noopener');
+      } catch (e) { alert(String(e)); }
+    }
+    async function load(){
+      const r = await fetch('/api/tasks/'+jobId);
+      if (r.status===401){ location.href='/login'; return; }
+      const {job, files} = await r.json();
+      const spd = (function(bps){bps=Number(bps)||0; if(bps<=0)return ''; if(bps<1048576)return (bps/1024).toFixed(1)+' KB/s'; return (bps/1048576).toFixed(2)+' MB/s';})(job.speed_bps);
+      const dest = job.destination || 'auto';
+      document.getElementById('meta').innerHTML =
+        `<div>來源 <b>${esc(job.source_type)}</b> · 目標 <b>${esc(dest)}</b> · <span class="badge ${esc(job.status)}">${esc(job.status)}</span> · ${job.progress}% ${spd?' · '+spd:''}</div>
+         <div class="muted" style="margin-top:6px">${esc(job.status_detail||'')}</div>
+         <div style="word-break:break-all;margin-top:6px">${esc(job.share_url)}</div>
+         <div class="muted">路徑前綴：${esc(job.pcloud_path||'')}</div>
+         <div class="progress" style="margin-top:10px"><i style="width:${job.progress||0}%"></i></div>`;
+      document.getElementById('err').textContent = job.error_message||'';
+      const ja = document.getElementById('jobActions');
+      let acts = `<button type="button" class="secondary" onclick="openJobFolder()">在雲端開啟此任務資料夾</button>`;
+      if (job.status === 'failed' || job.status === 'cancelled') {
+        acts += ` <button type="button" class="secondary" onclick="retryJob()">重試</button>`;
+      }
+      if (['done','cancelled','failed'].indexOf(job.status) < 0) {
+        acts += ` <button type="button" class="secondary danger" onclick="cancelJob()">取消</button>`;
+      }
+      ja.innerHTML = acts;
+      const isLocal = dest === 'local';
+      const videoExt = /\.(mp4|mkv|webm|mov|m4v|avi|ts|m2ts|flv|wmv|mpg|mpeg|3gp|rmvb)$/i;
+      document.getElementById('files').innerHTML = (files||[]).map(f => {
+        let op = '';
+        const name = f.relative_path||f.remote_name||'';
+        if (videoExt.test(name)) {
+          op += `<a class="btn" style="margin:2px" href="/play/${jobId}/${f.id}">▶ 播放</a>`;
+        }
+        if (f.status === 'done') {
+          op += `<button type="button" class="secondary" style="margin:2px" onclick="openLocation(${jobId},${f.id})">在雲端顯示</button>`;
+          if (isLocal) {
+            op += `<a class="btn secondary" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/download">下載</a>`;
+          }
+        }
+        return `<tr>
+          <td>${esc(name)}<div class="muted">${esc(f.pcloud_path||'')}</div>
+            ${f.error_message?`<div class="err">${esc(f.error_message)}</div>`:''}</td>
+          <td>${fmt(f.size)}</td>
+          <td>${fmt(f.downloaded_bytes)}${(f.status==='downloading'||f.status==='uploading')&&f.size?` <span class="muted">(${Math.min(100,(100*(f.downloaded_bytes||0)/f.size)).toFixed(1)}%)</span>`:''}</td>
+          <td>${fmt(f.uploaded_bytes)}</td>
+          <td><span class="badge ${esc(f.status)}">${esc(f.status)}</span></td>
+          <td>${op}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" class="muted">解析中或尚無檔案…</td></tr>';
+    }
+    window.retryJob = async function(){
+      const r = await fetch('/api/tasks/'+jobId+'/retry', {method:'POST'});
+      const d = await r.json().catch(()=>({}));
+      if (!r.ok) { alert(d.detail || '重試失敗'); return; }
+      load();
+    };
+    window.cancelJob = async function(){
+      if (!confirm('確定取消此任務？')) return;
+      await fetch('/api/tasks/'+jobId+'/cancel', {method:'POST'});
+      load();
+    };
+    load(); setInterval(load, 2000);
+  </script>
+</body>
+</html>

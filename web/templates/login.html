@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PanBridge Login</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="wrap" style="max-width:420px;margin-top:10vh">
+    <div class="card">
+      <h1 class="logo">Pan<span>Bridge</span></h1>
+      <p class="muted">雲端中繼：夸克 / 百度 → pCloud。本機關機不影響任務。</p>
+      <label>管理口令</label>
+      <input id="pw" type="password" autocomplete="current-password" placeholder="ADMIN_PASSWORD" />
+      <div class="actions">
+        <button id="btn">登入</button>
+      </div>
+      <p id="msg" class="err"></p>
+    </div>
+  </div>
+  <script>
+    document.getElementById('btn').onclick = async () => {
+      const password = document.getElementById('pw').value;
+      const r = await fetch('/api/auth/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({password})
+      });
+      if (r.ok) location.href = '/';
+      else document.getElementById('msg').textContent = '口令錯誤';
+    };
+    document.getElementById('pw').addEventListener('keydown', e => { if (e.key==='Enter') document.getElementById('btn').click(); });
+  </script>
+</body>
+</html>

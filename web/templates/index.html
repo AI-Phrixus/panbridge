@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PanBridge</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">Pan<span>Bridge</span> <span class="muted" style="font-size:.75rem;font-weight:500">v0.3.5</span></div>
+      <nav>
+        <a href="/">任務</a>
+        <a href="/settings">帳號設定</a>
+        <a href="#" id="logout">登出</a>
+      </nav>
+    </header>
+
+    <div class="card" id="sysbar" style="padding:12px 20px">
+      <span class="muted" id="sysinfo">載入系統狀態…</span>
+    </div>
+
+    <div class="card">
+      <h2>貼上分享連結</h2>
+      <p class="muted">支援夸克 pan.quark.cn 與百度 pan.baidu.com。可多行批量。提取碼可寫在連結後 <code>?pwd=xxxx</code> 或下方欄位。</p>
+      <label>分享連結</label>
+      <textarea id="links" placeholder="https://pan.quark.cn/s/xxxx&#10;https://pan.baidu.com/s/xxxx 提取码: abcd"></textarea>
+      <div class="row">
+        <div>
+          <label>統一提取碼（可選）</label>
+          <input id="pwd" placeholder="若連結內已有可留空" />
+        </div>
+        <div>
+          <label>pCloud 目標路徑前綴</label>
+          <input id="path" placeholder="/PanBridge" value="/PanBridge" />
+        </div>
+      </div>
+      <label>存放目標（大文件必看）</label>
+      <select id="dest">
+        <option value="auto" selected>自動：優先 OneDrive（大容量）/ pCloud 夠用才用 / 否則暫存</option>
+        <option value="onedrive">強制：OneDrive（微軟雲盤 5T，推薦大文件）</option>
+        <option value="pcloud">強制：pCloud（免費空間小，大文件會失敗）</option>
+        <option value="local">強制：服務器暫存（僅自己下載，注意條款與磁盤）</option>
+      </select>
+      <p class="muted" style="margin-top:8px">大文件請選 OneDrive。pCloud 免費約 4GB；VPS 暫存有條款與磁盤限制。</p>
+      <div class="actions">
+        <button id="submit">開始後台搬運</button>
+      </div>
+      <p id="createMsg" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2>任務列表</h2>
+      <p id="jobsMeta" class="muted" style="margin-top:0"></p>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>來源</th><th>標題 / 連結</th><th>狀態</th><th>進度</th><th></th></tr>
+        </thead>
+        <tbody id="jobs"></tbody>
+      </table>
+    </div>
+  </div>
+  <script>
+    const $ = s => document.querySelector(s);
+
+    function fmtSpeed(bps) {
+      bps = Number(bps) || 0;
+      if (bps <= 0) return '';
+      if (bps < 1024) return bps.toFixed(0) + ' B/s';
+      if (bps < 1048576) return (bps / 1024).toFixed(1) + ' KB/s';
+      return (bps / 1048576).toFixed(2) + ' MB/s';
+    }
+
+    function badge(s) {
+      return '<span class="badge ' + (s || '') + '">' + (s || '') + '</span>';
+    }
+
+    function bar(p) {
+      p = Number(p) || 0;
+      return '<div class="progress" title="' + p + '%"><i style="width:' + p + '%"></i></div>';
+    }
+
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    async function loadSys() {
+      try {
+        const r = await fetch('/api/tasks/system/status');
+        if (!r.ok) return;
+        const s = await r.json();
+        const p = s.providers || {};
+        const ok = x => (x ? '✓' : '✗');
+        const el = $('#sysinfo');
+        if (el) {
+          const pc = (s.pcloud_free_gb != null)
+            ? (' · pCloud <b>' + s.pcloud_free_gb + 'G</b>')
+            : '';
+          const od = (s.onedrive_free_gb != null)
+            ? (' · OneDrive <b>' + s.onedrive_free_gb + 'G</b>/' + (s.onedrive_quota_gb ?? '?') + 'G')
+            : '';
+          el.innerHTML =
+            'v' + (s.version || '?') +
+            ' · 磁盤 <b>' + (s.disk_free_gb ?? '?') + 'G</b>' +
+            od + pc +
+            ' · 帳號 OD' + ok(p.onedrive) +
+            ' PC' + ok(p.pcloud) +
+            ' 夸克' + ok(p.quark) +
+            ' 百度' + ok(p.baidu);
+        }
+      } catch (e) {}
+    }
+
+    async function loadJobs() {
+      try {
+        const r = await fetch('/api/tasks');
+        if (r.status === 401) {
+          location.href = '/login';
+          return;
+        }
+        if (!r.ok) {
+          $('#jobs').innerHTML = '<tr><td colspan="6" class="err">載入失敗 HTTP ' + r.status + '</td></tr>';
+          return;
+        }
+        const data = await r.json();
+        const jobs = data.jobs || [];
+        const meta = $('#jobsMeta');
+        if (meta) meta.textContent = '共 ' + jobs.length + ' 個任務（自動每 2.5 秒刷新）';
+        const tb = $('#jobs');
+        if (!jobs.length) {
+          tb.innerHTML = '<tr><td colspan="6" class="muted">尚無任務</td></tr>';
+          return;
+        }
+        tb.innerHTML = jobs.map(j => {
+          const spd = fmtSpeed(j.speed_bps);
+          const prog = Number(j.progress) || 0;
+          // status_detail already includes speed when downloading; only append if missing
+          const hasSpd = /B\/s|KB\/s|MB\/s/.test(j.status_detail || '');
+          const detail = j.status_detail
+            ? '<div class="muted" style="font-size:.85rem">' + esc(j.status_detail) +
+              (spd && !hasSpd ? ' · ' + esc(spd) : '') + '</div>'
+            : (spd ? '<div class="muted" style="font-size:.85rem">' + esc(spd) + '</div>' : '');
+          const err = j.error_message
+            ? '<div class="err">' + esc(j.error_message) + '</div>'
+            : '';
+          let actions = '';
+          if (j.status === 'failed') {
+            actions += '<button class="secondary" onclick="retry(' + j.id + ')">重試</button> ';
+          }
+          if (j.status === 'done' || j.progress > 0) {
+            actions += '<button class="secondary" onclick="openJobFolder(' + j.id + ')">雲端位置</button> ';
+          }
+          if (['done', 'cancelled', 'failed'].indexOf(j.status) < 0) {
+            actions += '<button class="secondary danger" onclick="cancel(' + j.id + ')">取消</button>';
+          }
+          return (
+            '<tr>' +
+            '<td><a href="/tasks/' + j.id + '">#' + j.id + '</a></td>' +
+            '<td>' + esc(j.source_type) + (j.destination ? '<div class="muted" style="font-size:.75rem">' + esc(j.destination) + '</div>' : '') + '</td>' +
+            '<td><div>' + esc(j.title || '') + '</div>' +
+            '<div class="muted" style="word-break:break-all;font-size:.8rem">' + esc(j.share_url) + '</div>' +
+            detail + err + '</td>' +
+            '<td>' + badge(j.status) + '</td>' +
+            '<td>' + bar(prog) + ' <span class="muted">' + prog.toFixed(1) + '%</span></td>' +
+            '<td>' + actions + '</td>' +
+            '</tr>'
+          );
+        }).join('');
+      } catch (e) {
+        const tb = $('#jobs');
+        if (tb) tb.innerHTML = '<tr><td colspan="6" class="err">載入異常: ' + esc(e.message || e) + '</td></tr>';
+      }
+    }
+
+    window.retry = async function (id) {
+      await fetch('/api/tasks/' + id + '/retry', { method: 'POST' });
+      loadJobs();
+    };
+    window.openJobFolder = async function (id) {
+      try {
+        const r = await fetch('/api/tasks/' + id + '/location');
+        const d = await r.json().catch(function(){return {};});
+        if (!r.ok) { alert(d.detail || '無法開啟'); return; }
+        const url = d.url || d.folder_url;
+        if (url) window.open(url, '_blank', 'noopener');
+      } catch (e) { alert(String(e)); }
+    };
+    window.cancel = async function (id) {
+      await fetch('/api/tasks/' + id + '/cancel', { method: 'POST' });
+      loadJobs();
+    };
+
+    $('#logout').onclick = async function (e) {
+      e.preventDefault();
+      await fetch('/api/auth/logout', { method: 'POST' });
+      location.href = '/login';
+    };
+
+    $('#submit').onclick = async function () {
+      const text = $('#links').value.trim();
+      if (!text) return;
+      $('#createMsg').textContent = '提交中…';
+      const r = await fetch('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: text,
+          passcode: $('#pwd').value,
+          pcloud_path: $('#path').value,
+          destination: ($('#dest') && $('#dest').value) || 'auto'
+        })
+      });
+      const data = await r.json().catch(function () { return {}; });
+      if (!r.ok) {
+        let err = data.detail || r.statusText;
+        if (Array.isArray(err)) err = err.map(function (x) { return x.msg || JSON.stringify(x); }).join('; ');
+        $('#createMsg').innerHTML = '<span class="err">' + esc(err) + '</span>';
+        return;
+      }
+      $('#createMsg').innerHTML = '<span class="ok">已建立任務: ' + (data.job_ids || []).join(', ') + '</span>';
+      $('#links').value = '';
+      loadJobs();
+    };
+
+    loadJobs();
+    loadSys();
+    setInterval(loadJobs, 2500);
+    setInterval(loadSys, 15000);
+  </script>
+</body>
+</html>

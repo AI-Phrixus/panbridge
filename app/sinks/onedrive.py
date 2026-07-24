@@ -1,0 +1,242 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+from urllib.parse import quote
+
+import httpx
+
+from app.auth.onedrive_auth import refresh_access_token
+
+log = logging.getLogger("panbridge.onedrive")
+
+GRAPH = "https://graph.microsoft.com/v1.0"
+# 5 MiB chunks (Graph requires multiple of 320 KiB; 5MiB = 16*320KiB)
+CHUNK = 5 * 1024 * 1024
+_TIMEOUT = httpx.Timeout(connect=30.0, read=180.0, write=180.0, pool=30.0)
+
+
+class OneDriveSink:
+    def __init__(self, access_token: str, refresh_token: str = "", client_id: str = "") -> None:
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.client_id = client_id
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.access_token}"}
+
+    async def _refresh(self) -> bool:
+        if not (self.refresh_token and self.client_id):
+            return False
+        try:
+            tok = await refresh_access_token(self.client_id, self.refresh_token)
+            self.access_token = tok["access_token"]
+            if tok.get("refresh_token"):
+                self.refresh_token = tok["refresh_token"]
+            return True
+        except Exception as e:
+            log.warning("onedrive token refresh failed: %s", e)
+            return False
+
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        extra_headers = dict(kwargs.pop("headers", None) or {})
+        headers = {**self._headers(), **extra_headers}
+        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
+            r = await client.request(method, url, headers=headers, **kwargs)
+            if r.status_code == 401 and await self._refresh():
+                headers = {**self._headers(), **extra_headers}
+                r = await client.request(method, url, headers=headers, **kwargs)
+            return r
+
+    async def space_info(self) -> dict[str, int]:
+        r = await self._request("GET", f"{GRAPH}/me/drive")
+        if r.status_code >= 400:
+            raise RuntimeError(f"onedrive drive info: {r.status_code} {r.text[:200]}")
+        data = r.json()
+        q = data.get("quota") or {}
+        total = int(q.get("total") or 0)
+        used = int(q.get("used") or 0)
+        remaining = int(q.get("remaining") or max(0, total - used))
+        return {"quota": total, "used": used, "free": remaining}
+
+    async def ensure_folder_path(self, path: str) -> str:
+        """Create nested folders under root; return item id of final folder."""
+        path = path.strip("/")
+        if not path:
+            r = await self._request("GET", f"{GRAPH}/me/drive/root")
+            return r.json()["id"]
+        parent = "root"
+        for part in path.split("/"):
+            if not part:
+                continue
+            parent = await self._ensure_child_folder(parent, part)
+        return parent
+
+    async def _ensure_child_folder(self, parent_id: str, name: str) -> str:
+        if parent_id == "root":
+            list_url = f"{GRAPH}/me/drive/root/children"
+            create_url = f"{GRAPH}/me/drive/root/children"
+        else:
+            list_url = f"{GRAPH}/me/drive/items/{parent_id}/children"
+            create_url = f"{GRAPH}/me/drive/items/{parent_id}/children"
+        # paginate children (folders with many files)
+        next_url: str | None = list_url
+        params: dict[str, str] | None = {"$select": "id,name,folder", "$top": "200"}
+        while next_url:
+            if next_url == list_url:
+                r = await self._request("GET", next_url, params=params)
+            else:
+                r = await self._request("GET", next_url)
+            if r.status_code >= 400:
+                break
+            data = r.json()
+            for it in data.get("value") or []:
+                if it.get("name") == name and "folder" in it:
+                    return it["id"]
+            next_url = data.get("@odata.nextLink")
+            params = None
+
+        r2 = await self._request(
+            "POST",
+            create_url,
+            headers={"Content-Type": "application/json"},
+            json={
+                "name": name,
+                "folder": {},
+                "@microsoft.graph.conflictBehavior": "fail",
+            },
+        )
+        if r2.status_code in (200, 201):
+            return r2.json()["id"]
+        if r2.status_code in (409, 400):
+            r3 = await self._request("GET", list_url, params={"$select": "id,name,folder", "$top": "200"})
+            for it in (r3.json().get("value") or []):
+                if it.get("name") == name and "folder" in it:
+                    return it["id"]
+        raise RuntimeError(f"create folder {name}: {r2.status_code} {r2.text[:200]}")
+
+    async def upload_file(
+        self,
+        local_path: Path,
+        remote_folder_path: str,
+        filename: str,
+        progress_cb: Callable[[int, int], Awaitable[None]] | None = None,
+    ) -> dict[str, Any]:
+        size = local_path.stat().st_size
+        folder_id = await self.ensure_folder_path(remote_folder_path)
+
+        # small file simple upload (< 4MB)
+        if size <= 4 * 1024 * 1024:
+            url = f"{GRAPH}/me/drive/items/{folder_id}:/{quote(filename)}:/content"
+            data = local_path.read_bytes()
+            r = await self._request("PUT", url, content=data, headers={"Content-Type": "application/octet-stream"})
+            if r.status_code >= 400:
+                raise RuntimeError(f"onedrive upload failed: {r.status_code} {r.text[:300]}")
+            if progress_cb:
+                await progress_cb(size, size)
+            return r.json()
+
+        # upload session for large files
+        sess_url = f"{GRAPH}/me/drive/items/{folder_id}:/{quote(filename)}:/createUploadSession"
+        r = await self._request(
+            "POST",
+            sess_url,
+            headers={"Content-Type": "application/json"},
+            json={"item": {"@microsoft.graph.conflictBehavior": "replace", "name": filename}},
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"createUploadSession: {r.status_code} {r.text[:300]}")
+        upload_url = r.json()["uploadUrl"]
+
+        sent = 0
+        with open(local_path, "rb") as f:
+            while sent < size:
+                chunk = f.read(CHUNK)
+                if not chunk:
+                    break
+                start = sent
+                end = sent + len(chunk) - 1
+                headers = {
+                    "Content-Length": str(len(chunk)),
+                    "Content-Range": f"bytes {start}-{end}/{size}",
+                }
+                last_err: Exception | None = None
+                for attempt in range(8):
+                    try:
+                        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                            ur = await client.put(upload_url, content=chunk, headers=headers)
+                        if ur.status_code in (200, 201, 202):
+                            sent = end + 1
+                            if progress_cb:
+                                await progress_cb(sent, size)
+                            if ur.status_code in (200, 201):
+                                return ur.json()
+                            last_err = None
+                            break
+                        # session expired / conflict → recreate for remaining is hard; fail with detail
+                        if ur.status_code in (404, 410):
+                            raise RuntimeError(
+                                f"upload session expired HTTP {ur.status_code}; will retry file upload"
+                            )
+                        last_err = RuntimeError(f"chunk upload {ur.status_code}: {ur.text[:300]}")
+                        if ur.status_code in (429, 500, 502, 503, 504) or ur.status_code >= 500:
+                            await asyncio.sleep(min(30, 1.5 * (attempt + 1)))
+                            continue
+                        raise last_err
+                    except (httpx.TimeoutException, httpx.TransportError, OSError) as e:
+                        last_err = e
+                        log.warning(
+                            "onedrive chunk %s-%s attempt %s: %s",
+                            start,
+                            end,
+                            attempt + 1,
+                            e,
+                        )
+                        await asyncio.sleep(min(30, 1.5 * (attempt + 1)))
+                if last_err is not None and sent <= start:
+                    raise RuntimeError(f"onedrive chunk failed after retries: {last_err}") from last_err
+
+        # Graph should return 200/201 on the final chunk; if we only saw 202s, treat incomplete
+        if sent < size:
+            raise RuntimeError(f"onedrive upload incomplete: {sent}/{size} bytes")
+        # Prefer re-fetching item meta is optional; size match is enough for our bookkeeping
+        return {"name": filename, "size": size}
+
+    async def root_web_url(self) -> str:
+        r = await self._request("GET", f"{GRAPH}/me/drive/root")
+        if r.status_code >= 400:
+            raise RuntimeError(f"onedrive root: {r.status_code}")
+        return (r.json().get("webUrl") or "https://onedrive.live.com/").strip()
+
+    async def web_url_for_path(self, remote_path: str) -> str:
+        """Return OneDrive webUrl for file path; fall back to parent folder or root."""
+        path = remote_path.strip().lstrip("/")
+        if not path:
+            return await self.root_web_url()
+        r = await self._request("GET", f"{GRAPH}/me/drive/root:/{quote(path, safe='/')}:")
+        if r.status_code < 400:
+            return (r.json().get("webUrl") or "").strip() or await self.root_web_url()
+        parent = str(Path(path).parent).replace("\\", "/").strip(".")
+        if parent and parent not in (".", path):
+            r2 = await self._request("GET", f"{GRAPH}/me/drive/root:/{quote(parent, safe='/')}:")
+            if r2.status_code < 400:
+                return (r2.json().get("webUrl") or "").strip() or await self.root_web_url()
+        return await self.root_web_url()
+
+    async def web_url_for_folder_path(self, remote_folder_path: str) -> str:
+        path = remote_folder_path.strip().lstrip("/")
+        if not path:
+            return await self.root_web_url()
+        r = await self._request("GET", f"{GRAPH}/me/drive/root:/{quote(path, safe='/')}:")
+        if r.status_code < 400:
+            return (r.json().get("webUrl") or "").strip() or await self.root_web_url()
+        try:
+            await self.ensure_folder_path(path)
+            r3 = await self._request("GET", f"{GRAPH}/me/drive/root:/{quote(path, safe='/')}:")
+            if r3.status_code < 400:
+                return (r3.json().get("webUrl") or "").strip() or await self.root_web_url()
+        except Exception:
+            pass
+        return await self.root_web_url()
