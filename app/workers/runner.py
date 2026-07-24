@@ -581,6 +581,9 @@ class Worker:
                         msg = str(e).lower()
                         if "取消" in str(e) or "cancel" in msg:
                             raise
+                        # cookie/login hard fail — do not burn retries
+                        if "登录已失效" in str(e) or "require login" in msg or "auth expired" in msg:
+                            raise
                         if any(
                             x in msg
                             for x in (
