@@ -165,8 +165,21 @@ async def _single_stream_download(
         try:
             async with httpx.AsyncClient(timeout=_dl_timeout(), follow_redirects=True) as client:
                 async with client.stream("GET", current_url, headers=req_headers) as resp:
-                    if resp.status_code in (401, 403, 404):
-                        raise RuntimeError(f"download URL expired or forbidden: HTTP {resp.status_code}")
+                    # 412 = Quark CDN precondition / UA / stale link
+                    if resp.status_code in (401, 403, 404, 412):
+                        # read short body for better error (Quark: auth expired)
+                        try:
+                            err_body = (await resp.aread())[:400].decode("utf-8", "ignore")
+                        except Exception:
+                            err_body = ""
+                        low = err_body.lower()
+                        if "auth expired" in low or "require login" in low or "auth not found" in low:
+                            raise RuntimeError(
+                                "夸克登录已失效（CDN require login），请到设定页重新连接夸克 Cookie"
+                            )
+                        raise RuntimeError(
+                            f"download URL expired or forbidden: HTTP {resp.status_code} {err_body[:120]}"
+                        )
                     if existing > 0 and resp.status_code == 200:
                         existing = 0
                         part.write_bytes(b"")
@@ -226,7 +239,7 @@ async def _single_stream_download(
             return part
         except RuntimeError as e:
             msg = str(e).lower()
-            if any(x in msg for x in ("expired", "forbidden", "403", "401", "404")):
+            if any(x in msg for x in ("expired", "forbidden", "403", "401", "404", "412")):
                 if url_refresh_cb:
                     try:
                         current_url = await url_refresh_cb()
@@ -396,7 +409,7 @@ async def _parallel_range_download(
                 current = url_state["url"]
                 async with httpx.AsyncClient(timeout=_dl_timeout(), follow_redirects=True) as client:
                     async with client.stream("GET", current, headers=req) as resp:
-                        if resp.status_code in (401, 403, 404):
+                        if resp.status_code in (401, 403, 404, 412):
                             if url_refresh_cb:
                                 await refresh_url_if_needed()
                                 raise RuntimeError(f"download URL expired: HTTP {resp.status_code}")

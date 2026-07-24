@@ -589,6 +589,7 @@ class Worker:
                                 "403",
                                 "401",
                                 "404",
+                                "412",
                                 "stalled",
                                 "timeout",
                                 "retries",

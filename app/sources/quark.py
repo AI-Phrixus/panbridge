@@ -17,27 +17,35 @@ def _dt() -> int:
     return random.randint(100, 9999)
 
 
+# Official-ish PC client UA — CDN returns HTTP 412 with plain Chrome UA
+_QUARK_PC_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) quark-cloud-drive/2.5.56 Chrome/100.0.4896.160 "
+    "Electron/18.3.5.12 Safari/537.36 Channel/pckk_other_ch"
+)
+
+
 class QuarkSource:
     def __init__(self, cookie: str) -> None:
         self.cookie = cookie.strip()
         self.headers = {
-            "user-agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
+            "user-agent": _QUARK_PC_UA,
             "origin": "https://pan.quark.cn",
             "referer": "https://pan.quark.cn/",
             "accept-language": "zh-CN,zh;q=0.9",
             "cookie": self.cookie,
         }
         self._save_dir_fid = "0"
+        self._dl_ua = _QUARK_PC_UA
 
     def get_download_headers(self) -> dict[str, str]:
+        # Download CDN is strict about UA (412 Precondition Failed otherwise)
         return {
-            "user-agent": self.headers["user-agent"],
+            "user-agent": self._dl_ua or _QUARK_PC_UA,
             "origin": "https://pan.quark.cn",
             "referer": "https://pan.quark.cn/",
             "cookie": self.cookie,
+            "accept": "*/*",
         }
 
     @staticmethod
@@ -251,9 +259,11 @@ class QuarkSource:
     async def get_download_urls(self, fids: list[str]) -> list[dict[str, Any]]:
         headers = dict(self.headers)
         headers["content-type"] = "application/json"
+        headers["user-agent"] = _QUARK_PC_UA
+        self._dl_ua = _QUARK_PC_UA
         params = {"pr": "ucpro", "fr": "pc", "sys": "win32", "ve": "2.5.56", "ut": "", "guid": ""}
         async with httpx.AsyncClient(timeout=60) as client:
-            for attempt in range(2):
+            for attempt in range(3):
                 r = await client.post(
                     "https://drive-pc.quark.cn/1/clouddrive/file/download",
                     params=params,
@@ -262,11 +272,8 @@ class QuarkSource:
                 )
                 data = r.json()
                 if data.get("code") == 23018:
-                    headers["user-agent"] = (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) quark-cloud-drive/2.5.56 Chrome/100.0.4896.160 "
-                        "Electron/18.3.5.12 Safari/537.36 Channel/pckk_other_ch"
-                    )
+                    headers["user-agent"] = _QUARK_PC_UA
+                    self._dl_ua = _QUARK_PC_UA
                     continue
                 if data.get("status") != 200:
                     raise RuntimeError(data.get("message") or "quark download list failed")
@@ -351,18 +358,29 @@ class QuarkSource:
 
         owned = await self._list_tree(to_dir)
         by_rel: dict[str, dict] = {}
+        by_name: dict[str, list[dict]] = {}
         for o in owned:
             by_rel[o["relative_path"]] = o
-            by_rel[o["name"]] = o
+            by_name.setdefault(o["name"], []).append(o)
 
+        unmatched = 0
         for f in flat:
-            hit = by_rel.get(f.relative_path) or by_rel.get(f.name)
+            hit = by_rel.get(f.relative_path)
+            if not hit:
+                # only use unique basename (duplicate names across dirs would mis-map)
+                cands = by_name.get(f.name) or []
+                if len(cands) == 1:
+                    hit = cands[0]
             if hit:
                 f.meta["owned_fid"] = hit["fid"]
                 f.size = hit.get("size") or f.size
             else:
-                # last resort: try original fid
+                unmatched += 1
+                # last resort: original share fid (works for own-share style APIs)
                 f.meta["owned_fid"] = f.fid
+        if unmatched:
+            # not fatal — some files may still download via share fid
+            pass
 
         return ResolvedShare(
             title=title,
@@ -414,7 +432,13 @@ class QuarkSource:
         items = await self.get_download_urls([fid])
         if not items:
             raise RuntimeError(f"no download url for {file.name}")
-        return items[0]["download_url"]
+        item = items[0]
+        if item.get("ban"):
+            raise RuntimeError(f"夸克文件被禁止下载: {file.name}")
+        url = item.get("download_url") or ""
+        if not url:
+            raise RuntimeError(f"no download url for {file.name}")
+        return url
 
 
 async def _async_sleep(sec: float) -> None:
