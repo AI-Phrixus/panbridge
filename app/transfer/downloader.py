@@ -173,9 +173,15 @@ async def _single_stream_download(
                         except Exception:
                             err_body = ""
                         low = err_body.lower()
-                        if "auth expired" in low or "require login" in low or "auth not found" in low:
+                        if (
+                            "auth expired" in low
+                            or "require login" in low
+                            or "auth not found" in low
+                            or "requestdeniedbycallback" in low
+                            or (resp.status_code == 412 and "precondition" in low)
+                        ):
                             raise RuntimeError(
-                                "夸克登录已失效（CDN require login），请到设定页重新连接夸克 Cookie"
+                                "夸克登录已失效（CDN require login / 412），请到设定页重新连接夸克 Cookie"
                             )
                         raise RuntimeError(
                             f"download URL expired or forbidden: HTTP {resp.status_code} {err_body[:120]}"
