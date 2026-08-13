@@ -9,16 +9,17 @@ from typing import Any
 
 from app.config import get_settings
 from app.db import Database
-from app.security import decrypt_json, encrypt_json
+from app.security import decrypt_json
+from app.auth.onedrive_session import make_onedrive_sink
+from app.auth.quark_session import load_quark_source
 from app.sources.baidu import BaiduSource
 from app.sources.base import SourceFile
-from app.sources.quark import QuarkSource
+from app.sources.quark import QuarkAuthenticationError
 from app.sinks.pcloud import PCloudSink
 from app.sinks.local import LocalSink
 from app.sinks.onedrive import OneDriveSink
-from app.auth.onedrive_auth import refresh_access_token
 from app.transfer.disk import ensure_space
-from app.transfer.downloader import resumable_download
+from app.transfer.downloader import downloaded_bytes_on_disk, resumable_download
 
 log = logging.getLogger("panbridge.worker")
 
@@ -31,6 +32,20 @@ def _fmt_speed(bps: float) -> str:
     if bps < 1024 * 1024:
         return f"{bps/1024:.1f} KB/s"
     return f"{bps/1024/1024:.2f} MB/s"
+
+
+def _is_auth_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return isinstance(error, QuarkAuthenticationError) or any(
+        marker in message
+        for marker in (
+            "登入已失效",
+            "登录已失效",
+            "require login",
+            "auth expired",
+            "login invalid",
+        )
+    )
 
 
 # If a running job has no DB progress update for this long, force-cancel & requeue.
@@ -216,11 +231,26 @@ class Worker:
             raise
         except Exception as e:
             log.exception("job %s failed", job_id)
+            current = await self.db.get_job(job_id)
+            failed_phase = (current or {}).get("status") or ""
+            if failed_phase in ("resolving", "saving"):
+                # A crash/error while inserting a large resolved file list can
+                # leave a plausible-looking but incomplete subset. Force the
+                # next retry to resolve atomically instead of silently skipping files.
+                await self.db.clear_files(job_id)
             await self.db.update_job(
                 job_id,
                 status="failed",
                 error_message=str(e)[:2000],
-                status_detail="",
+                status_detail=(
+                    "帳號登入失效 · 請到設定頁重新連接後重試（下載進度已保留）"
+                    if _is_auth_error(e)
+                    else (
+                        "解析未完成 · 已清除不完整檔案清單，重試時會重新解析"
+                        if failed_phase in ("resolving", "saving")
+                        else ""
+                    )
+                ),
                 speed_bps=0,
             )
         finally:
@@ -243,7 +273,7 @@ class Worker:
 
         source_type = job["source_type"]
         if source_type == "quark":
-            source = QuarkSource((await self._load_cred("quark"))["cookie"])
+            source = await load_quark_source(self.db)
         elif source_type == "baidu":
             source = BaiduSource((await self._load_cred("baidu"))["cookie"])
         else:
@@ -344,7 +374,7 @@ class Worker:
                     return
                 # Cookie/login hard-fail: abort job so user re-auths once (not 1452 times)
                 es = str(e)
-                if "登录已失效" in es or "require login" in es.lower() or "auth expired" in es.lower():
+                if _is_auth_error(e):
                     log.error("job %s auth hard-fail: %s", job_id, e)
                     await self.db.update_job(
                         job_id,
@@ -419,27 +449,7 @@ class Worker:
             t.cancel()
 
     async def _make_onedrive_sink(self) -> "OneDriveSink":
-        cred = await self._load_cred("onedrive")
-        access = cred.get("access_token") or ""
-        refresh = cred.get("refresh_token") or ""
-        client_id = cred.get("client_id") or ""
-
-        async def _persist(access_t: str, refresh_t: str) -> None:
-            cred["access_token"] = access_t
-            cred["refresh_token"] = refresh_t
-            await self.db.set_credential("onedrive", encrypt_json(cred))
-
-        if refresh and client_id:
-            try:
-                tok = await refresh_access_token(client_id, refresh)
-                access = tok["access_token"]
-                refresh = tok.get("refresh_token") or refresh
-                await _persist(access, refresh)
-            except Exception as e:
-                log.warning("onedrive refresh failed: %s", e)
-        if not access:
-            raise RuntimeError("OneDrive 未登入或 token 失效，請到設定頁重新裝置碼登入")
-        return OneDriveSink(access, refresh, client_id, on_tokens=_persist)
+        return await make_onedrive_sink(self.db)
 
     async def _pick_destination(self, destination: str, total_size: int, settings) -> tuple[str, Any, str]:
         """Choose onedrive / pcloud / local."""
@@ -541,6 +551,17 @@ class Worker:
         part_path = job_tmp / (local_name + ".part")
         final_path = job_tmp / local_name
 
+        async def record_resume_state(status: str, error_message: str) -> None:
+            verified = downloaded_bytes_on_disk(part_path, sf.size)
+            fields: dict[str, Any] = {
+                "status": status,
+                "error_message": error_message,
+                "downloaded_bytes": verified,
+            }
+            if part_path.exists():
+                fields["local_path"] = str(part_path)
+            await self.db.update_file(file_id, **fields)
+
         try:
             await self.db.update_file(file_id, status="downloading", error_message="")
             await self.db.update_job(
@@ -549,21 +570,30 @@ class Worker:
                 status_detail=f"下載中: {sf.relative_path or sf.name}",
             )
 
+            if final_path.exists() and sf.size > 0 and final_path.stat().st_size > sf.size:
+                # This directory contains only regenerable transfer staging.
+                # An oversized v0.3.x result is not trustworthy and must never
+                # be uploaded as if complete.
+                final_path.unlink()
+
             if part_path.exists():
                 await self.db.update_file(
-                    file_id, downloaded_bytes=part_path.stat().st_size, local_path=str(part_path)
+                    file_id,
+                    downloaded_bytes=downloaded_bytes_on_disk(part_path, sf.size),
+                    local_path=str(part_path),
                 )
-            elif final_path.exists() and final_path.stat().st_size >= (sf.size or 0) > 0:
+            elif final_path.exists() and final_path.stat().st_size == sf.size > 0:
                 part_path = final_path
 
             need_download = True
             # size==0 alone must NOT skip download (empty placeholder file)
-            if final_path.exists() and sf.size > 0 and final_path.stat().st_size >= sf.size:
+            if final_path.exists() and sf.size > 0 and final_path.stat().st_size == sf.size:
                 need_download = False
                 part_path = final_path
 
             if need_download:
-                need = max(0, (sf.size or 0) - (part_path.stat().st_size if part_path.exists() else 0))
+                have_on_disk = downloaded_bytes_on_disk(part_path, sf.size)
+                need = max(0, (sf.size or 0) - have_on_disk)
                 if need:
                     ensure_space(job_tmp, need, settings.disk_reserve_bytes)
 
@@ -631,12 +661,19 @@ class Worker:
                 async def refresh_url() -> str:
                     u = await source.prepare_download(sf, share_meta)
                     await self.db.update_file(file_id, download_url=u)
-                    have = part_path.stat().st_size if part_path.exists() else 0
+                    have = downloaded_bytes_on_disk(part_path, sf.size)
                     await self.db.update_job(
                         job_id,
                         status_detail=f"直鏈刷新後續傳 · 已 {_fmt_bytes(have)}: {sf.name}",
                     )
                     return u
+
+                async def refresh_request() -> tuple[str, dict[str, str]]:
+                    refreshed_url = await refresh_url()
+                    # Quark rotates __puus/__pus while issuing the new URL. The
+                    # resumed CDN request must use those new cookies, not the
+                    # header snapshot from the beginning of a multi-day job.
+                    return refreshed_url, source.get_download_headers()
 
                 async def do_dl(u: str) -> None:
                     await resumable_download(
@@ -648,6 +685,7 @@ class Worker:
                         connections=conns,
                         max_retries=60,
                         url_refresh_cb=refresh_url,
+                        request_refresh_cb=refresh_request,
                     )
 
                 last_err: Exception | None = None
@@ -670,7 +708,7 @@ class Worker:
                         if "取消" in str(e) or "cancel" in msg:
                             raise
                         # cookie/login hard fail — do not burn retries
-                        if "登录已失效" in str(e) or "require login" in msg or "auth expired" in msg:
+                        if _is_auth_error(e):
                             raise
                         if any(
                             x in msg
@@ -704,9 +742,9 @@ class Worker:
             local_upload = final_path if final_path.exists() else part_path
             size_now = local_upload.stat().st_size
             # refuse to upload truncated payloads when we know the real size
-            if sf.size > 0 and size_now < sf.size:
+            if sf.size > 0 and size_now != sf.size:
                 raise RuntimeError(
-                    f"下載不完整，拒絕上傳: {size_now}/{sf.size} bytes ({sf.name})"
+                    f"下載不完整，拒絕上傳（大小不符）: {size_now}/{sf.size} bytes ({sf.name})"
                 )
             await self.db.update_file(
                 file_id,
@@ -827,10 +865,22 @@ class Worker:
                         pass
             except OSError:
                 pass
+        except asyncio.CancelledError:
+            # Task.cancel() bypasses ``except Exception`` on Python 3.12. Make
+            # the verified resume checkpoint durable before propagating cancel.
+            reconcile = asyncio.create_task(record_resume_state("queued", ""))
+            try:
+                await asyncio.shield(reconcile)
+            except asyncio.CancelledError:
+                await reconcile
+            raise
         except Exception as e:
             msg = str(e)
+            # Parallel slices report in-flight bytes for a responsive UI, but
+            # only metadata-marked ranges survive a retry. Reconcile the DB on
+            # every abort so a 412/cancel never leaves a misleading percentage.
             if "取消" in msg or "cancel" in msg.lower():
-                await self.db.update_file(file_id, status="queued", error_message="")
+                await record_resume_state("queued", "")
                 raise
-            await self.db.update_file(file_id, status="failed", error_message=msg[:1500])
+            await record_resume_state("failed", msg[:1500])
             raise

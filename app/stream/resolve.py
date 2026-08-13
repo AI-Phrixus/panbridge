@@ -7,9 +7,10 @@ from typing import Any
 
 from app.config import get_settings
 from app.db import Database
+from app.auth.quark_session import load_quark_source
 from app.security import decrypt_json
 from app.sources.baidu import BaiduSource
-from app.sources.quark import QuarkSource
+from app.sources.quark import QuarkAuthenticationError
 from app.sources.base import SourceFile
 
 
@@ -34,7 +35,13 @@ def is_video_name(name: str) -> bool:
     return Path(name).suffix.lower() in VIDEO_EXT
 
 
-async def resolve_stream(db: Database, job_id: int, file_id: int) -> StreamSource:
+async def resolve_stream(
+    db: Database,
+    job_id: int,
+    file_id: int,
+    *,
+    prefer_transcode: bool = False,
+) -> StreamSource:
     job = await db.get_job(job_id)
     f = await db.get_file(file_id)
     if not job or not f or f["job_id"] != job_id:
@@ -69,7 +76,15 @@ async def resolve_stream(db: Database, job_id: int, file_id: int) -> StreamSourc
     if rel:
         candidates.append(settings.data_path / "delivered" / rel)
     for c in candidates:
-        if c.exists() and c.is_file() and c.stat().st_size > 0:
+        if not c.exists() or not c.is_file() or c.stat().st_size <= 0:
+            continue
+        range_meta = Path(str(c) + ".ranges.json")
+        complete = f.get("status") == "done" or (
+            size > 0 and c.stat().st_size == size and not range_meta.exists()
+        )
+        # local_path is updated while a .part is downloading. Serving it here
+        # exposes a truncated or sparse file and prevents source-stream fallback.
+        if complete:
             return StreamSource(
                 kind="local",
                 local_path=c,
@@ -102,16 +117,30 @@ async def resolve_stream(db: Database, job_id: int, file_id: int) -> StreamSourc
         )
 
     if source_type == "quark":
-        enc = await db.get_credential("quark")
-        if not enc:
-            raise RuntimeError("夸克未登录")
-        src = QuarkSource(decrypt_json(enc)["cookie"])
+        src = await load_quark_source(db)
         sf = SourceFile(
             fid=str(meta.get("owned_fid") or f.get("source_fid") or ""),
             name=name,
             size=size,
             meta=meta,
         )
+        if prefer_transcode:
+            try:
+                stream = await src.prepare_stream(sf)
+                return StreamSource(
+                    kind="quark_transcode",
+                    url=stream["url"],
+                    headers=src.get_download_headers(),
+                    filename=name,
+                    size=int(stream.get("size") or size),
+                    content_type=str(stream.get("content_type") or "video/mp4"),
+                )
+            except QuarkAuthenticationError:
+                raise
+            except Exception:
+                # Transcoding is account/file dependent. Original-file proxy is
+                # still a valid fallback for native browser formats and players.
+                pass
         url = await src.prepare_download(sf, {})
         return StreamSource(
             kind="quark",

@@ -7,7 +7,7 @@
 
 | | |
 |--|--|
-| **版本** | v0.3.13 |
+| **版本** | v0.4.0 |
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
 | **核心能力** | 貼連結即跑 · 斷點續傳 · 大檔 OneDrive · 串流播放 |
@@ -26,10 +26,10 @@
 
 - 貼夸克 / 百度分享連結（可批量）→ 後台排隊執行  
 - **斷點續傳**（`.part` + HTTP Range；服務重啟可恢復）  
-- 直鏈過期自動重新取鏈  
+- 直鏈過期自動重新取鏈；夸克輪換 Cookie 自動加密保存
 - 目標：**OneDrive**（大檔推薦）/ **pCloud** / **伺服器暫存**  
 - 進度按**檔案大小加權**；詳情顯示 MB/GB 與速度  
-- 網頁播放 / 外部播放器串流（VLC 等）  
+- 網頁 HLS／轉碼播放；外部播放器限時簽名串流（VLC、Infuse、IINA、PotPlayer）
 - 一鍵打開雲端資料夾  
 - 帳號：掃碼或 Cookie / pCloud token / OneDrive 裝置碼  
 - v1 **不推送通知**（完成請看 UI 或雲盤）
@@ -64,6 +64,8 @@ cp .env.example .env
 
 uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
+
+v0.4.0 起若仍使用範例 secret、`admin` 或過短密碼，服務會拒絕啟動並顯示要補的設定，避免意外暴露網盤憑證。
 
 開啟 <http://127.0.0.1:8080> ，用 `ADMIN_PASSWORD` 登入 → **設定**連接帳號 → 首頁貼連結。
 
@@ -133,6 +135,8 @@ ssh ubuntu@YOUR_HOST 'sudo systemctl restart panbridge && curl -s localhost:8080
 | `ADMIN_PASSWORD` | 網頁口令 |
 | `DATA_DIR` | 資料目錄（DB + tmp） |
 | `MAX_CONCURRENT_JOBS` | 小 VPS 建議 `1` |
+| `PUBLIC_BASE_URL` | 可選；反向代理的公開 HTTPS 網址，用於播放器連結 |
+| `STREAM_TOKEN_MAX_AGE` | 外部播放器限時連結有效秒數（預設 7 天） |
 | `PCLOUD_*` | pCloud API 主機與預設路徑 |
 
 ---
@@ -159,6 +163,18 @@ Dockerfile     容器
 ---
 
 ## Changelog（摘要）
+
+### v0.4.0
+- 夸克 `__puus` / `__pus` 輪換 Cookie 自動合併並持久化；續傳同步刷新直鏈與請求頭
+- 多段下載 metadata v2：原子保存區段邊界、跨連線數恢復、登入失效不再清空大檔進度
+- 修復 Range 探測可能把整個大檔讀入記憶體、稀疏檔假進度與半份解析清單漏檔
+- 播放連結改為檔案級限時簽名；VLC/IINA 無需瀏覽器 Cookie；支援 HEAD、suffix Range
+- 夸克影片優先嘗試線上轉碼；HLS 清單／分片安全代理；網頁播放器元件隨應用自帶，不依賴外部 CDN
+- 未完成／遺失／稀疏 `.part` 不再冒充完整影片；區段與續傳紀錄按完成順序同步落盤
+- 修復播放頁變數衝突造成的直接崩潰；新增 Windows VLC/PotPlayer 與 Infuse 可用的 `.m3u` 下載
+- Quark／OneDrive 登入採世代隔離與鎖定續期，舊工作不會覆蓋新登入；預設弱密碼／secret 拒絕啟動
+- pCloud 改用官方 multipart 串流上傳並核對遠端大小
+- 對抗與回歸測試擴充至 v0.4.0
 
 ### v0.3.13
 - SQL 聚合進度（1452 檔列表不再拖慢 UI）  

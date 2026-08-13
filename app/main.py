@@ -14,7 +14,7 @@ from app.api.routes_auth import router as auth_router
 from app.api.routes_tasks import router as tasks_router
 from app.api.routes_stream import router as stream_router
 from app.api.routes_location import router as location_router
-from app.config import get_settings
+from app.config import get_settings, validate_runtime_security
 from app.db import db
 from app.security import verify_session_token
 from app.workers.runner import Worker
@@ -32,6 +32,7 @@ worker = Worker(db)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    validate_runtime_security(settings)
     settings.data_path.mkdir(parents=True, exist_ok=True)
     await db.connect()
     worker.start()
@@ -42,7 +43,7 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 
-app = FastAPI(title="PanBridge", version="0.3.13", lifespan=lifespan)
+app = FastAPI(title="PanBridge", version="0.4.0", lifespan=lifespan)
 app.state.worker = worker
 app.include_router(auth_router)
 app.include_router(tasks_router)

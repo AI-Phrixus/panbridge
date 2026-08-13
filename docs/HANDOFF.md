@@ -1,7 +1,8 @@
 # PanBridge 交接手冊（新帳號接手必讀）
 
-> 版本：**v0.3.13**（以 `/api/health` 為準）  
-> 最後更新：2026-07-24  
+> 倉庫版本：**v0.4.0**（實際部署以 `/api/health` 為準）
+>
+> 最後更新：2026-08-07
 > 目的：讓**全新 GitHub / 開發環境**在不依賴舊對話上下文的情況下，能接手運維與開發。
 
 ---
@@ -200,7 +201,7 @@ ssh ubuntu@152.70.86.29 '
 | 來源/目標 | 方式 |
 |-----------|------|
 | **百度** | 設定頁掃碼，或貼完整 Cookie（需 `BDUSS`，建議含 `STOKEN`） |
-| **夸克** | Playwright 掃碼或貼 Cookie |
+| **夸克** | 純 CAS API 掃碼或貼 Cookie；v0.4.0 自動保存輪換 Cookie |
 | **pCloud** | 帳密（2FA 可填驗證碼）或貼 `auth` token（推薦有 2FA 時） |
 | **OneDrive** | Azure **公用用戶端** Client ID + 裝置碼登入（無需公網回調） |
 
@@ -219,7 +220,7 @@ ssh ubuntu@152.70.86.29 '
 
 1. **百度限速**：海外 VPS 常很慢；工具保證續傳，不保證快。  
 2. **百度直鏈過期**：worker 會重新 `prepare_download` 再 Range 續傳。  
-3. **下載卡死**：v0.3.3+ 有 read timeout + 120s 無進度重連 + 10 分鐘 job 看門狗。  
+3. **下載卡死**：v0.3.3+ 有 read timeout + 120s 無進度重連 + 10 分鐘 job 看門狗；v0.4.0 會同步刷新 URL 與 Cookie。
 4. **磁碟**：~50GB 系統盤；單檔 ~25GB 下完會佔大量 tmp，上傳成功後會刪暫存。  
 5. **MemoryMax=800M**：適合 free tier；勿開太多並行。  
 6. **進度條**：按**檔案大小加權**（大檔主導），不是「檔案個數」。  
@@ -235,10 +236,12 @@ ssh ubuntu@152.70.86.29 '
 |------|------|
 | UI 打不開 | `systemctl status panbridge`、OCI 安全列表放行 **TCP 8080** |
 | 登入失敗 | `.env` 的 `ADMIN_PASSWORD` |
-| 一直 downloading 不動 | `journalctl -u panbridge`；`.part` mtime 是否增長；等看門狗或 restart |
+| 一直 downloading 不動 | `journalctl -u panbridge`；看 UI `downloaded_bytes` / `du`，不要相信稀疏 `.part` 的 `ls` 表面大小 |
 | 403 下載 | 百度 Cookie / UA；程式已對百度用 `LogStatistic` UA |
 | OneDrive 上傳失敗 | 設定頁重新裝置碼；磁碟是否已下完整檔 |
 | 憑證解密失敗 | `PANBRIDGE_SECRET` 是否被改過 |
+| 啟動即報「安全設定未完成」 | `.env` 仍是範例 secret／弱密碼；填入隨機 secret 與至少 10 字元管理密碼 |
+| Windows／Infuse 播放 | 播放頁複製 7 天串流網址，或下載 `.m3u`；反向代理請設定 `PUBLIC_BASE_URL` |
 
 ```bash
 # 看 .part 是否在長

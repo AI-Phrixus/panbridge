@@ -5,6 +5,7 @@ import hashlib
 import json
 import secrets
 from typing import Any
+from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet, InvalidToken
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -56,6 +57,61 @@ def verify_session_token(token: str | None) -> bool:
         return bool(data.get("auth"))
     except (BadSignature, SignatureExpired):
         return False
+
+
+def stream_serializer() -> URLSafeTimedSerializer:
+    settings = get_settings()
+    return URLSafeTimedSerializer(settings.panbridge_secret, salt="panbridge-stream")
+
+
+def make_stream_token(job_id: int, file_id: int) -> str:
+    return stream_serializer().dumps({"job_id": int(job_id), "file_id": int(file_id)})
+
+
+def verify_stream_token(token: str | None, job_id: int, file_id: int) -> bool:
+    if not token:
+        return False
+    try:
+        data = stream_serializer().loads(token, max_age=get_settings().stream_token_max_age)
+        return int(data.get("job_id")) == int(job_id) and int(data.get("file_id")) == int(file_id)
+    except (BadSignature, SignatureExpired, TypeError, ValueError):
+        return False
+
+
+def hls_asset_serializer() -> URLSafeTimedSerializer:
+    settings = get_settings()
+    return URLSafeTimedSerializer(settings.panbridge_secret, salt="panbridge-hls-asset")
+
+
+def make_hls_asset_token(job_id: int, file_id: int, url: str) -> str:
+    return hls_asset_serializer().dumps(
+        {"job_id": int(job_id), "file_id": int(file_id), "url": str(url)}
+    )
+
+
+def verify_hls_asset_token(token: str | None, job_id: int, file_id: int) -> str | None:
+    if not token:
+        return None
+    try:
+        data = hls_asset_serializer().loads(
+            token, max_age=get_settings().stream_token_max_age
+        )
+        if int(data.get("job_id")) != int(job_id) or int(data.get("file_id")) != int(file_id):
+            return None
+        url = str(data.get("url") or "")
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not (
+            parsed.scheme == "https"
+            and not parsed.username
+            and not parsed.password
+            and parsed.port in (None, 443)
+            and (host == "quark.cn" or host.endswith(".quark.cn"))
+        ):
+            return None
+        return url
+    except (BadSignature, SignatureExpired, TypeError, ValueError):
+        return None
 
 
 def check_password(password: str) -> bool:

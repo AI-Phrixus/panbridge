@@ -13,7 +13,7 @@ sudo journalctl -u panbridge -f
 
 ```bash
 curl -s http://127.0.0.1:8080/api/health
-# {"ok":true,"version":"0.3.5"}
+# {"ok":true,"version":"0.4.0"}
 ```
 
 ## 任務
@@ -37,16 +37,17 @@ PY
 ### 監看大檔是否在下載（最可靠）
 
 ```bash
-# 兩次間隔 30–60 秒，size 變大 = 健康
-ls -lh /home/ubuntu/panbridge/data/tmp/2/
-sleep 30
-ls -lh /home/ubuntu/panbridge/data/tmp/2/
+# 多線程 .part 可能是稀疏檔，ls 的表面大小不是真實進度。
+# 看 DB downloaded_bytes、UI 速度，或 du 的實際佔用量。
+du -h /home/ubuntu/panbridge/data/tmp/2/*
+sqlite3 /home/ubuntu/panbridge/data/app.db \
+  'select remote_name,downloaded_bytes,size,status from files where job_id=2;'
 ```
 
 或：
 
 ```bash
-watch -n 30 'ls -lh /home/ubuntu/panbridge/data/tmp/2/ 2>/dev/null; curl -s localhost:8080/api/health'
+watch -n 30 'du -h /home/ubuntu/panbridge/data/tmp/2/* 2>/dev/null; curl -s localhost:8080/api/health'
 ```
 
 **不要**只看總進度 0.x% 就判定卡死（24GB 檔在 80KB/s 時百分比半天幾乎不動是正常的）。
@@ -55,7 +56,7 @@ watch -n 30 'ls -lh /home/ubuntu/panbridge/data/tmp/2/ 2>/dev/null; curl -s loca
 
 | 情況 | 建議 |
 |------|------|
-| `.part` 持續增長 | **不要** restart |
+| UI `downloaded_bytes` / `du` 持續增長 | **不要** restart |
 | 部署新程式碼 | 可 restart（會斷流但續傳） |
 | `.part` 15 分鐘完全不動 + 日誌無進展 | 可 restart 一次並驗證續傳 |
 | 改 `.env` / secret | 需 restart（可能要重登網盤） |
@@ -102,8 +103,10 @@ journalctl -u panbridge | grep -i killed
 ## 安全建議
 
 - 改強 `ADMIN_PASSWORD`  
+- `PANBRIDGE_SECRET` 至少 32 字元、`ADMIN_PASSWORD` 至少 10 字元；範例值會拒絕啟動
 - 不要把 8080 暴露在無密碼公網過久；優先 Tunnel 或 IP 限制  
-- 定期輪換網盤 Cookie（百度/夸克過期會導致 resolve/download 失敗）  
+- v0.4.0 會自動保存夸克輪換 Cookie；只有長效登入本身失效時才需重新掃碼
+- 公網部署請使用 HTTPS；播放器 token 在有效期內等同該單一檔案的讀取權限
 - **切勿**把 `.env`、`app.db` 提交 Git  
 
 ## 日誌噪音

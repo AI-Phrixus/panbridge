@@ -32,7 +32,9 @@
 | POST | `/api/tasks/{id}/retry` | 重試（非 active） |
 | POST | `/api/tasks/{id}/cancel` | 取消 |
 | GET | `/api/tasks/{id}/files/{fid}/download` | local 目標下載 |
-| GET | `/api/tasks/{id}/files/{fid}/stream` | 串流（Range） |
+| GET/HEAD | `/api/tasks/{id}/files/{fid}/stream` | 串流（單一 Range）；瀏覽器 session 或 `token` |
+| GET | `/api/tasks/{id}/files/{fid}/playlist.m3u` | 下載 VLC／PotPlayer／Infuse 播放清單（需登入） |
+| GET/HEAD | `/api/tasks/{id}/files/{fid}/hls-asset` | 內部 HLS 子資源代理；只接受伺服器簽名的 Quark HTTPS URL |
 | GET | `/api/tasks/{id}/files/{fid}/location` | 雲端 URL |
 | GET | `/api/tasks/{id}/location` | 任務資料夾 URL |
 | DELETE | `/api/tasks/{id}/files/{fid}/local` | 刪本機 delivered |
@@ -50,3 +52,5 @@
 | `/play/{job}/{file}` | 播放頁 |
 | `/browse/local/{job}` | 本機暫存瀏覽 |
 | `/api/health` · `/health` | 健康（無需登入） |
+
+播放頁會產生綁定單一 job/file 的限時 `token`，供 VLC／Infuse／IINA／PotPlayer 等不會攜帶瀏覽器 Cookie 的播放器使用。`transcode=1` 會對夸克影片優先嘗試線上轉碼；HLS 代理只允許 HTTPS `*.quark.cn` 並逐跳檢查重新導向。

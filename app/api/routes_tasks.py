@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.api.deps import require_auth
+from app.auth.onedrive_session import make_onedrive_sink
 from app.config import get_settings
 from app.db import db
 from app.security import decrypt_json
@@ -45,26 +46,8 @@ async def system_status(_: None = Depends(require_auth)):
     try:
         enc = await db.get_credential("onedrive")
         if enc:
-            from app.security import decrypt_json
-            from app.sinks.onedrive import OneDriveSink
-            from app.auth.onedrive_auth import refresh_access_token
-            cred = decrypt_json(enc)
-            access = cred.get("access_token") or ""
-            if cred.get("refresh_token") and cred.get("client_id"):
-                try:
-                    tok = await refresh_access_token(cred["client_id"], cred["refresh_token"])
-                    access = tok["access_token"]
-                    if tok.get("refresh_token"):
-                        cred["refresh_token"] = tok["refresh_token"]
-                    cred["access_token"] = access
-                    from app.security import encrypt_json
-
-                    await db.set_credential("onedrive", encrypt_json(cred))
-                except Exception:
-                    pass
-            if access:
-                od = OneDriveSink(access, cred.get("refresh_token") or "", cred.get("client_id") or "")
-                onedrive_space = await od.space_info()
+            od = await make_onedrive_sink(db)
+            onedrive_space = await od.space_info()
     except Exception:
         onedrive_space = None
     return {

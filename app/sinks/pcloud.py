@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 from pathlib import Path
 from typing import Any, Callable, Awaitable
+from urllib.parse import quote
 
 import httpx
 
@@ -85,34 +87,43 @@ class PCloudSink:
         progresshash = hashlib.md5(f"{full_remote}:{size}".encode()).hexdigest()
         folderid = await self.ensure_path(remote_folder_path)
 
-        # Stream upload via multipart
-        # Avoid timeout=None hangs on stalled connections (same class of bug as download)
+        # The documented uploadfile API is POST multipart/form-data. Build the
+        # body as an async stream so multi-GB files are never buffered in RAM and
+        # cancellation/progress remain responsive.
         _to = httpx.Timeout(connect=30.0, read=300.0, write=300.0, pool=30.0)
         async with httpx.AsyncClient(timeout=_to) as client:
-            # Use PUT-style body upload is simpler for progress tracking
-            # pCloud accepts POST multipart uploadfile
-            with open(local_path, "rb") as f:
-                files = {"file": (filename, f)}
-                data = {
-                    "auth": self.auth,
-                    "folderid": str(folderid),
-                    "filename": filename,
-                    "nopartial": "1",
-                    "progresshash": progresshash,
-                    "renameifexists": "0",
-                }
-                # httpx reads file fully for multipart; for large files use manual streaming PUT
-            # Prefer streaming PUT: https://api/uploadfile?auth=&folderid=&filename=
             url = f"{self.base}/uploadfile"
-            params = {
+            boundary = "panbridge-" + secrets.token_hex(16)
+            fields = {
                 "auth": self.auth,
-                "folderid": folderid,
-                "filename": filename,
-                "nopartial": 1,
+                "folderid": str(folderid),
+                "nopartial": "1",
                 "progresshash": progresshash,
+                "renameifexists": "0",
             }
+            pieces: list[bytes] = []
+            for key, value in fields.items():
+                pieces.append(
+                    (
+                        f"--{boundary}\r\n"
+                        f'Content-Disposition: form-data; name="{key}"\r\n\r\n'
+                        f"{value}\r\n"
+                    ).encode("utf-8")
+                )
+            safe_filename = filename.replace("\r", "_").replace("\n", "_").replace('"', "_")
+            pieces.append(
+                (
+                    f"--{boundary}\r\n"
+                    'Content-Disposition: form-data; name="file"; '
+                    f'filename="{safe_filename}"; filename*=UTF-8\'\'{quote(filename, safe="")}\r\n'
+                    "Content-Type: application/octet-stream\r\n\r\n"
+                ).encode("utf-8")
+            )
+            prefix = b"".join(pieces)
+            suffix = f"\r\n--{boundary}--\r\n".encode("ascii")
 
-            async def file_iter():
+            async def multipart_iter():
+                yield prefix
                 sent = 0
                 with open(local_path, "rb") as fh:
                     while True:
@@ -123,29 +134,19 @@ class PCloudSink:
                         if progress_cb:
                             await progress_cb(sent, size)
                         yield chunk
+                yield suffix
 
-            headers = {"Content-Type": "application/octet-stream"}
-            r = await client.put(url, params=params, content=file_iter(), headers=headers)
+            headers = {
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(prefix) + size + len(suffix)),
+            }
+            r = await client.post(url, content=multipart_iter(), headers=headers)
             try:
                 result = r.json()
             except Exception as e:
                 raise RuntimeError(f"pcloud upload bad response: {r.status_code} {r.text[:300]}") from e
             if result.get("result") != 0:
-                # fallback multipart POST
-                with open(local_path, "rb") as f:
-                    r2 = await client.post(
-                        url,
-                        data={
-                            "auth": self.auth,
-                            "folderid": str(folderid),
-                            "nopartial": "1",
-                            "progresshash": progresshash,
-                        },
-                        files={"file": (filename, f)},
-                    )
-                    result = r2.json()
-                if result.get("result") != 0:
-                    raise RuntimeError(f"pcloud upload failed: {result}")
+                raise RuntimeError(f"pcloud upload failed: {result}")
             meta_list = result.get("metadata") or []
             meta = meta_list[0] if meta_list else result.get("metadata") or {}
             if not isinstance(meta, dict):
@@ -156,8 +157,14 @@ class PCloudSink:
                     f"pcloud upload size mismatch: remote={remote_size} local={size}"
                 )
             if not remote_size and size > 0:
-                # some responses omit size — verify via stat when path known
-                pass
+                # Never mark a large transfer complete on ambiguous metadata.
+                verified = await self.stat_file(full_remote)
+                verified_size = int((verified or {}).get("size") or 0)
+                if verified_size != size:
+                    raise RuntimeError(
+                        f"pcloud upload verification failed: remote={verified_size} local={size}"
+                    )
+                meta = verified or meta
             if progress_cb:
                 await progress_cb(size, size)
             return meta

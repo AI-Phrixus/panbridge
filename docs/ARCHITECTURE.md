@@ -40,7 +40,7 @@
 | `app/sinks/pcloud.py` | pCloud uploadfile |
 | `app/sinks/local.py` | 移到 `data/delivered/` |
 | `app/transfer/downloader.py` | Range 續傳、timeout、stall、刷新直鏈 |
-| `app/stream/resolve.py` | 播放：本地檔或源站直鏈代理 |
+| `app/stream/resolve.py` | 播放：完整本地檔、源站直鏈或夸克線上轉碼 |
 | `web/templates/*` | 登入 / 首頁 / 設定 / 任務詳情 |
 
 ## 任務生命週期
@@ -61,9 +61,10 @@ queued → resolving → saving → downloading → uploading → done
 
 - 下載寫入 `data/tmp/{job_id}/{file_id}_{name}.part`  
 - HTTP `Range: bytes={existing}-`  
+- 多連線區段以 `.ranges.json` v2 原子記錄；不可用稀疏檔 `st_size` 當真實進度
 - 進度寫入 `files.downloaded_bytes` + job `status_detail`  
 - 進程重啟：狀態仍為 downloading → worker 再次認領 → 從 part 長度繼續  
-- 直鏈 401/403：`url_refresh_cb` 重新取鏈  
+- 直鏈 401/403/412：同步刷新 URL + Cookie 請求頭；夸克輪換 Cookie 回寫加密 DB
 
 ## 進度計算
 
@@ -74,7 +75,11 @@ queued → resolving → saving → downloading → uploading → done
 
 - 管理口令：`ADMIN_PASSWORD`（session cookie itsdangerous）  
 - Cookie/token：`encrypt_json` 存 DB（key 派生自 `PANBRIDGE_SECRET`）  
-- 串流/下載 API 需登入  
+- 管理 API 需登入；外部播放器可使用檔案級、限時簽名串流 token
+- 範例／弱 `PANBRIDGE_SECRET` 或 `ADMIN_PASSWORD` 會在啟動時 fail closed
+- Quark／OneDrive credential 帶 `session_id` 世代；舊 worker 的延遲續期不得寫入新登入
+- HLS 子資源 token 綁 job/file/URL，且僅代理 Quark 官方 HTTPS 網域，阻擋 Cookie 外洩與 SSRF
+- 固定版本 hls.js 由 `/static/vendor/` 自行提供，Windows Chrome／Edge 不依賴外部 CDN
 
 ## 並發與資源
 

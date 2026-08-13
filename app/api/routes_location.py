@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 
 from app.api.deps import require_auth
-from app.auth.onedrive_auth import refresh_access_token
+from app.auth.onedrive_session import make_onedrive_sink
 from app.config import get_settings
 from app.db import db
 from app.security import decrypt_json
@@ -19,28 +19,10 @@ router = APIRouter(tags=["location"])
 
 
 async def _onedrive_sink() -> OneDriveSink:
-    enc = await db.get_credential("onedrive")
-    if not enc:
-        raise HTTPException(400, "OneDrive 未连接")
-    cred = decrypt_json(enc)
-    access = cred.get("access_token") or ""
-    refresh = cred.get("refresh_token") or ""
-    client_id = cred.get("client_id") or ""
-    if refresh and client_id:
-        try:
-            tok = await refresh_access_token(client_id, refresh)
-            access = tok["access_token"]
-            refresh = tok.get("refresh_token") or refresh
-            cred["access_token"] = access
-            cred["refresh_token"] = refresh
-            from app.security import encrypt_json
-
-            await db.set_credential("onedrive", encrypt_json(cred))
-        except Exception:
-            pass
-    if not access:
-        raise HTTPException(400, "OneDrive token 失效，请重新登录")
-    return OneDriveSink(access, refresh, client_id)
+    try:
+        return await make_onedrive_sink(db)
+    except RuntimeError as error:
+        raise HTTPException(400, str(error)) from error
 
 
 async def _pcloud_sink() -> PCloudSink:

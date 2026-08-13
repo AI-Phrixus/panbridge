@@ -8,6 +8,11 @@ from pydantic import BaseModel
 
 from app.api.deps import require_auth
 from app.auth import baidu_qr, quark_auth, pcloud_auth, onedrive_auth
+from app.auth.quark_session import delete_quark_credential, save_quark_credential
+from app.auth.onedrive_session import (
+    delete_onedrive_credential,
+    save_onedrive_credential,
+)
 from app.config import get_settings
 from app.db import db
 from app.security import check_password, encrypt_json, make_session_token
@@ -167,10 +172,7 @@ async def quark_qr_status(sid: str, _: None = Depends(require_auth)):
         raise HTTPException(404, "session not found")
     if sess.status == "confirmed" and sess.cookie:
         nick = quark_auth.extract_nickname(sess.message)
-        await db.set_credential(
-            "quark",
-            encrypt_json({"cookie": sess.cookie, "nickname": nick}),
-        )
+        await save_quark_credential(db, sess.cookie, nick)
         sess.cookie = ""  # wipe secret after persist (ADV-R1)
         if nick and not sess.message.startswith("已登錄"):
             sess.message = f"已登錄：{nick}"
@@ -189,7 +191,7 @@ async def quark_cookie(body: CookieIn, _: None = Depends(require_auth)):
     if len(ck) < 20:
         raise HTTPException(400, "Cookie 過短，請貼上完整 Cookie")
     nick = await quark_auth.validate_cookie(ck)
-    await db.set_credential("quark", encrypt_json({"cookie": ck, "nickname": nick}))
+    await save_quark_credential(db, ck, nick)
     return {"ok": True, "nickname": nick}
 
 
@@ -258,17 +260,11 @@ async def onedrive_device_status(sid: str, _: None = Depends(require_auth)):
     except Exception as e:
         raise HTTPException(400, str(e)) from e
     if sess.status == "confirmed" and sess.result.get("access_token"):
-        await db.set_credential(
-            "onedrive",
-            encrypt_json(
-                {
-                    "access_token": sess.result["access_token"],
-                    "refresh_token": sess.result.get("refresh_token"),
-                    "client_id": sess.client_id,
-                    "email": sess.result.get("email"),
-                }
-            ),
-        )
+        await save_onedrive_credential(db, sess.result)
+        # A confirmed polling endpoint may be called repeatedly by the UI. Wipe
+        # tokens after the first durable save so it cannot create a new session
+        # generation every few seconds.
+        sess.result = {}
     return {
         "id": sess.id,
         "status": sess.status,
@@ -289,5 +285,10 @@ async def onedrive_save_client_id(body: OneDriveClientIn, _: None = Depends(requ
 async def delete_provider(provider: str, _: None = Depends(require_auth)):
     if provider not in ("quark", "baidu", "pcloud", "onedrive", "onedrive_app"):
         raise HTTPException(400, "bad provider")
-    await db.delete_credential(provider)
+    if provider == "quark":
+        await delete_quark_credential(db)
+    elif provider == "onedrive":
+        await delete_onedrive_credential(db)
+    else:
+        await db.delete_credential(provider)
     return {"ok": True}

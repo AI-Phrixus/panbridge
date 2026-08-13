@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import random
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
+from app.auth.quark_cookie import merge_cookie_header, refresh_cookies_from_response
 from app.sources.base import ResolvedShare, SourceFile
 
 
@@ -25,9 +27,27 @@ _QUARK_PC_UA = (
 )
 
 
+CookieUpdateCB = Callable[[str, dict[str, str]], Awaitable[str | None]]
+CookieLoadCB = Callable[[], Awaitable[str | None]]
+
+
+class QuarkAuthenticationError(RuntimeError):
+    pass
+
+
 class QuarkSource:
-    def __init__(self, cookie: str) -> None:
+    def __init__(
+        self,
+        cookie: str,
+        on_cookie_update: CookieUpdateCB | None = None,
+        *,
+        request_lock: asyncio.Lock | None = None,
+        on_request_start: CookieLoadCB | None = None,
+    ) -> None:
         self.cookie = cookie.strip()
+        self._on_cookie_update = on_cookie_update
+        self._request_lock = request_lock
+        self._on_request_start = on_request_start
         self.headers = {
             "user-agent": _QUARK_PC_UA,
             "origin": "https://pan.quark.cn",
@@ -37,6 +57,65 @@ class QuarkSource:
         }
         self._save_dir_fid = "0"
         self._dl_ua = _QUARK_PC_UA
+
+    async def _capture_cookie_update(self, response: httpx.Response) -> None:
+        updates = refresh_cookies_from_response(response)
+        if not updates:
+            return
+        merged = merge_cookie_header(self.cookie, updates)
+        if merged == self.cookie:
+            return
+        self.cookie = merged
+        self.headers["cookie"] = merged
+        if self._on_cookie_update:
+            canonical = await self._on_cookie_update(merged, updates)
+            if canonical:
+                self.cookie = canonical
+                self.headers["cookie"] = canonical
+
+    async def _request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        async def send() -> httpx.Response:
+            if self._on_request_start:
+                canonical = await self._on_request_start()
+                if canonical:
+                    self.cookie = canonical
+                    self.headers["cookie"] = canonical
+                    request_headers = dict(kwargs.get("headers") or {})
+                    request_headers["cookie"] = canonical
+                    kwargs["headers"] = request_headers
+            response = await client.request(method, url, **kwargs)
+            await self._capture_cookie_update(response)
+            return response
+
+        if self._request_lock:
+            # Quark rotates the same cookie key without a version marker. Keep
+            # control-plane requests ordered across workers so an older delayed
+            # response can never overwrite a newer token.
+            async with self._request_lock:
+                return await send()
+        return await send()
+
+    @staticmethod
+    def _api_error(data: dict[str, Any], fallback: str) -> RuntimeError:
+        message = str(data.get("message") or fallback)
+        low = message.lower()
+        code = data.get("code")
+        status = data.get("status")
+        if (
+            code in (401, 403, 41001, 41017)
+            or status in (401, 403)
+            or any(word in low for word in ("login", "登录", "登錄", "未登陆", "未登录", "auth"))
+        ):
+            return QuarkAuthenticationError(
+                "夸克登入已失效，請到設定頁重新掃碼；已下載的進度會保留"
+            )
+        return RuntimeError(message)
 
     def get_download_headers(self) -> dict[str, str]:
         # Download CDN is strict about UA (412 Precondition Failed otherwise)
@@ -54,7 +133,9 @@ class QuarkSource:
 
     async def get_user_nickname(self) -> str:
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.get(
+            r = await self._request(
+                client,
+                "GET",
                 "https://pan.quark.cn/account/info",
                 params={"fr": "pc", "platform": "pc"},
                 headers=self.headers,
@@ -62,12 +143,14 @@ class QuarkSource:
             data = r.json()
             if data.get("data"):
                 return data["data"].get("nickname") or "quark-user"
-            raise RuntimeError(f"quark login invalid: {data.get('message') or data}")
+            raise self._api_error(data, "quark login invalid")
 
     async def get_stoken(self, pwd_id: str, password: str = "") -> str:
         params = {"pr": "ucpro", "fr": "pc", "uc_param_str": "", "__dt": _dt(), "__t": _ts13()}
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
+            r = await self._request(
+                client,
+                "POST",
                 "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token",
                 params=params,
                 json={"pwd_id": pwd_id, "passcode": password},
@@ -76,7 +159,7 @@ class QuarkSource:
             data = r.json()
             if data.get("status") == 200 and data.get("data"):
                 return data["data"]["stoken"]
-            raise RuntimeError(data.get("message") or "failed to get quark stoken")
+            raise self._api_error(data, "failed to get quark stoken")
 
     async def get_detail(
         self, pwd_id: str, stoken: str, pdir_fid: str = "0"
@@ -102,10 +185,10 @@ class QuarkSource:
                     "__dt": _dt(),
                     "__t": _ts13(),
                 }
-                r = await client.get(api, params=params, headers=self.headers)
+                r = await self._request(client, "GET", api, params=params, headers=self.headers)
                 data = r.json()
                 if data.get("status") != 200:
-                    raise RuntimeError(data.get("message") or "quark detail failed")
+                    raise self._api_error(data, "quark detail failed")
                 is_owner = int((data.get("data") or {}).get("is_owner") or 0)
                 items = data.get("data", {}).get("list") or []
                 file_list.extend(items)
@@ -121,7 +204,9 @@ class QuarkSource:
 
     async def _create_subfolder(self, parent_fid: str, name: str) -> str:
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
+            r = await self._request(
+                client,
+                "POST",
                 "https://drive-pc.quark.cn/1/clouddrive/file",
                 params={"pr": "ucpro", "fr": "pc", "uc_param_str": "", "__dt": _dt(), "__t": _ts13()},
                 json={"pdir_fid": parent_fid, "file_name": name, "dir_path": "", "dir_init_lock": False},
@@ -132,7 +217,9 @@ class QuarkSource:
                 return data["data"]["fid"]
             if data.get("code") == 23008:
                 # name conflict: list parent and find
-                r2 = await client.get(
+                r2 = await self._request(
+                    client,
+                    "GET",
                     "https://drive-pc.quark.cn/1/clouddrive/file/sort",
                     params={
                         "pr": "ucpro",
@@ -152,14 +239,16 @@ class QuarkSource:
                 for item in (r2.json().get("data") or {}).get("list") or []:
                     if item.get("dir") and item.get("file_name") == name:
                         return item["fid"]
-            raise RuntimeError(data.get("message") or "create quark subfolder failed")
+            raise self._api_error(data, "create quark subfolder failed")
 
     async def ensure_bridge_folder(self) -> str:
         """Create /PanBridge-Temp under root if needed; return fid."""
         name = "PanBridge-Temp"
         async with httpx.AsyncClient(timeout=60) as client:
             # list root
-            r = await client.get(
+            r = await self._request(
+                client,
+                "GET",
                 "https://drive-pc.quark.cn/1/clouddrive/file/sort",
                 params={
                     "pr": "ucpro",
@@ -182,7 +271,9 @@ class QuarkSource:
                     self._save_dir_fid = item["fid"]
                     return item["fid"]
             # create
-            r2 = await client.post(
+            r2 = await self._request(
+                client,
+                "POST",
                 "https://drive-pc.quark.cn/1/clouddrive/file",
                 params={"pr": "ucpro", "fr": "pc", "uc_param_str": "", "__dt": _dt(), "__t": _ts13()},
                 json={"pdir_fid": "0", "file_name": name, "dir_path": "", "dir_init_lock": False},
@@ -195,7 +286,7 @@ class QuarkSource:
             if d2.get("code") == 23008:
                 # race: list again
                 return await self.ensure_bridge_folder()
-            raise RuntimeError(d2.get("message") or "create quark folder failed")
+            raise self._api_error(d2, "create quark folder failed")
 
     async def save_share(
         self,
@@ -216,7 +307,9 @@ class QuarkSource:
             "scene": "link",
         }
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
+            r = await self._request(
+                client,
+                "POST",
                 "https://drive.quark.cn/1/clouddrive/share/sharepage/save",
                 params=params,
                 json=body,
@@ -225,11 +318,13 @@ class QuarkSource:
             data = r.json()
             task_id = (data.get("data") or {}).get("task_id")
             if not task_id:
-                raise RuntimeError(data.get("message") or "quark save task failed")
+                raise self._api_error(data, "quark save task failed")
             # poll task
             for i in range(60):
                 await _async_sleep(0.5 + random.random() * 0.5)
-                tr = await client.get(
+                tr = await self._request(
+                    client,
+                    "GET",
                     "https://drive-pc.quark.cn/1/clouddrive/task",
                     params={
                         "pr": "ucpro",
@@ -264,7 +359,9 @@ class QuarkSource:
         params = {"pr": "ucpro", "fr": "pc", "sys": "win32", "ve": "2.5.56", "ut": "", "guid": ""}
         async with httpx.AsyncClient(timeout=60) as client:
             for attempt in range(3):
-                r = await client.post(
+                r = await self._request(
+                    client,
+                    "POST",
                     "https://drive-pc.quark.cn/1/clouddrive/file/download",
                     params=params,
                     json={"fids": fids},
@@ -276,7 +373,7 @@ class QuarkSource:
                     self._dl_ua = _QUARK_PC_UA
                     continue
                 if data.get("status") != 200:
-                    raise RuntimeError(data.get("message") or "quark download list failed")
+                    raise self._api_error(data, "quark download list failed")
                 return data.get("data") or []
         return []
 
@@ -393,7 +490,9 @@ class QuarkSource:
         page = 1
         async with httpx.AsyncClient(timeout=60) as client:
             while True:
-                r = await client.get(
+                r = await self._request(
+                    client,
+                    "GET",
                     "https://drive-pc.quark.cn/1/clouddrive/file/sort",
                     params={
                         "pr": "ucpro",
@@ -426,6 +525,58 @@ class QuarkSource:
                     break
                 page += 1
         return out
+
+    async def prepare_stream(self, file: SourceFile) -> dict[str, Any]:
+        """Return a Quark-generated browser-friendly video stream when available."""
+        fid = file.meta.get("owned_fid") or file.fid
+        params = {"pr": "ucpro", "fr": "pc", "uc_param_str": "", "__dt": _dt(), "__t": _ts13()}
+        body = {
+            "fid": fid,
+            "resolutions": "low,normal,high,super,2k,4k",
+            "supports": "fmp4_av,m3u8,dolby_vision",
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await self._request(
+                client,
+                "POST",
+                "https://drive.quark.cn/1/clouddrive/file/v2/play/project",
+                params=params,
+                json=body,
+                headers={**self.headers, "content-type": "application/json"},
+            )
+        data = response.json()
+        if data.get("code") not in (None, 0) or data.get("status") not in (None, 200):
+            raise self._api_error(data, "quark transcoding stream unavailable")
+
+        payload = data.get("data") or {}
+        candidates: list[dict[str, Any]] = []
+        for item in payload.get("video_list") or []:
+            info = item.get("video_info") or {}
+            if info.get("url"):
+                candidates.append({**info, "resolution": item.get("resolution") or info.get("resolution")})
+        if not candidates:
+            raise RuntimeError("夸克暫無可用的線上轉碼，請改用 VLC 原畫播放")
+
+        rank = {"low": 1, "normal": 2, "high": 3, "super": 4, "2k": 5, "4k": 6}
+        default = str(payload.get("default_resolution") or "").lower()
+        chosen = next(
+            (item for item in candidates if str(item.get("resolution") or "").lower() == default),
+            None,
+        )
+        if chosen is None:
+            chosen = max(
+                candidates,
+                key=lambda item: rank.get(str(item.get("resolution") or "").lower(), 0),
+            )
+        stream_url = str(chosen.get("url") or "")
+        fmt = str(chosen.get("format") or "").lower()
+        is_hls = "m3u8" in fmt or ".m3u8" in stream_url.lower()
+        return {
+            "url": stream_url,
+            "size": int(chosen.get("size") or payload.get("size") or file.size or 0),
+            "content_type": "application/vnd.apple.mpegurl" if is_hls else "video/mp4",
+            "resolution": chosen.get("resolution") or default,
+        }
 
     async def prepare_download(self, file: SourceFile, share_meta: dict[str, Any]) -> str:
         fid = file.meta.get("owned_fid") or file.fid

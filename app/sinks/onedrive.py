@@ -27,16 +27,27 @@ class OneDriveSink:
         refresh_token: str = "",
         client_id: str = "",
         on_tokens: Callable[[str, str], Awaitable[None]] | None = None,
+        refresh_cb: Callable[[], Awaitable[tuple[str, str]]] | None = None,
     ) -> None:
         self.access_token = access_token
         self.refresh_token = refresh_token
         self.client_id = client_id
         self._on_tokens = on_tokens  # persist rotated tokens (BUG-10)
+        self._refresh_cb = refresh_cb
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.access_token}"}
 
     async def _refresh(self) -> bool:
+        if self._refresh_cb:
+            try:
+                access, refresh = await self._refresh_cb()
+                self.access_token = access
+                self.refresh_token = refresh
+                return True
+            except Exception as e:
+                log.warning("onedrive coordinated token refresh failed: %s", e)
+                return False
         if not (self.refresh_token and self.client_id):
             return False
         try:
@@ -45,10 +56,10 @@ class OneDriveSink:
             if tok.get("refresh_token"):
                 self.refresh_token = tok["refresh_token"]
             if self._on_tokens:
-                try:
-                    await self._on_tokens(self.access_token, self.refresh_token)
-                except Exception as e:
-                    log.warning("onedrive token persist failed: %s", e)
+                # A generation-aware callback deliberately rejects tokens from
+                # an old login. Treat that as refresh failure instead of using
+                # the wrong account silently.
+                await self._on_tokens(self.access_token, self.refresh_token)
             return True
         except Exception as e:
             log.warning("onedrive token refresh failed: %s", e)
