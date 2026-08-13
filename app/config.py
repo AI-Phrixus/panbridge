@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     stream_token_max_age: int = 60 * 60 * 24 * 7
     # Optional canonical external URL, e.g. https://panbridge.example.com.
     public_base_url: str = ""
-    app_version: str = "0.4.1"
+    app_version: str = "0.4.2"
 
     @property
     def data_path(self) -> Path:

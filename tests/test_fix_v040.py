@@ -39,6 +39,7 @@ from app.sources.base import SourceFile
 from app.sources.quark import QuarkSource
 from app.sources.quark import QuarkAuthenticationError
 from app.sinks.pcloud import PCloudSink
+from app.sinks.onedrive import OneDriveSink
 from app.stream.resolve import StreamSource, resolve_stream
 from app.transfer.downloader import (
     _prepare_single_stream_resume,
@@ -441,6 +442,52 @@ async def test_signed_player_head_works_without_browser_cookie(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_old_signed_proxy_link_redirects_completed_onedrive_without_media_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    direct_url = "https://tenant.sharepoint.com/fresh?authkey=abc"
+
+    async def fake_resolve(*args, **kwargs):
+        return StreamSource(
+            kind="onedrive",
+            url=direct_url,
+            filename="電影.mkv",
+            size=123,
+            content_type="video/x-matroska",
+        )
+
+    class BombClient:  # pragma: no cover - construction itself is a failure
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("completed OneDrive bytes must not use Oracle proxy")
+
+    monkeypatch.setattr(routes_stream, "resolve_stream", fake_resolve)
+    monkeypatch.setattr(routes_stream.httpx, "AsyncClient", BombClient)
+    for method in ("HEAD", "GET"):
+        scope = {
+            "type": "http",
+            "http_version": "1.1",
+            "method": method,
+            "scheme": "http",
+            "path": "/api/tasks/1/files/2/stream",
+            "raw_path": b"/api/tasks/1/files/2/stream",
+            "query_string": b"",
+            "headers": [(b"range", b"bytes=100-109")],
+            "client": ("127.0.0.1", 1),
+            "server": ("152.70.86.29", 8080),
+        }
+        response = await routes_stream.stream_file(
+            1,
+            2,
+            Request(scope),
+            token=make_stream_token(1, 2),
+            transcode=False,
+        )
+        assert response.status_code == 307
+        assert response.headers["location"] == direct_url
+        assert response.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.asyncio
 async def test_incomplete_part_is_not_used_as_local_stream(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -723,9 +770,8 @@ async def test_player_playlist_supports_windows_vlc_potplayer_and_infuse(
     assert "PotPlayer (Win)" in page_html
     assert "Windows / VLC" in page_html
     assert "Infuse 付費版" in page_html
-    assert 'href="infuse://x-callback-url/play?' in page_html
-    assert "filename=%E9%9B%BB%E5%BD%B1.mkv" in page_html
-    assert "v0.4.1 新版" in page_html
+    assert f'href="/api/tasks/{job_id}/files/{file_id}/open/infuse"' in page_html
+    assert "v0.4.2 · OneDrive 直連" in page_html
     assert page.headers["cache-control"] == "no-store"
     assert '<video id="v"' not in page_html
     assert "transcode=1" not in page_html
@@ -1065,7 +1111,17 @@ async def test_completed_onedrive_file_is_primary_external_player_source(
     file_id = await db.create_file(
         job_id, "電影.mkv", size=123, source_fid="source-fid"
     )
-    await db.update_file(file_id, status="done", pcloud_fileid="od-item-1")
+    await db.update_file(
+        file_id,
+        status="done",
+        pcloud_fileid="od-item-1",
+        meta={
+            "onedrive_delivery": {
+                "drive_id": "drive-1",
+                "item_id": "od-item-1",
+            }
+        },
+    )
 
     class FakeSink:
         async def download_info_for_item(self, item_id):
@@ -1075,6 +1131,7 @@ async def test_completed_onedrive_file_is_primary_external_player_source(
                 "name": "電影.mkv",
                 "size": 123,
                 "content_type": "video/x-matroska",
+                "drive_id": "drive-1",
             }
 
     async def fake_sink(_db):
@@ -1090,6 +1147,120 @@ async def test_completed_onedrive_file_is_primary_external_player_source(
 
 
 @pytest.mark.asyncio
+async def test_onedrive_download_info_uses_documented_content_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sink = OneDriveSink("access")
+    calls: list[str] = []
+
+    async def fake_request(method: str, url: str, **kwargs):
+        calls.append(url)
+        assert kwargs["params"] == {
+            "$select": "id,name,size,file,parentReference"
+        }
+        return httpx.Response(
+            200,
+            json={
+                "id": "item-1",
+                "name": "電影.mkv",
+                "size": 123,
+                "file": {"mimeType": "video/x-matroska"},
+                "parentReference": {"driveId": "drive-1"},
+            },
+        )
+
+    monkeypatch.setattr(sink, "_request", fake_request)
+    redirect_calls: list[str] = []
+
+    async def fake_redirect(safe_id: str) -> str:
+        redirect_calls.append(safe_id)
+        return "https://public.dm.files.1drv.com/fresh?authkey=abc"
+
+    monkeypatch.setattr(sink, "_download_redirect_for_item", fake_redirect)
+    info = await sink.download_info_for_item("item/1")
+    assert info == {
+        "url": "https://public.dm.files.1drv.com/fresh?authkey=abc",
+        "name": "電影.mkv",
+        "size": 123,
+        "content_type": "video/x-matroska",
+        "drive_id": "drive-1",
+    }
+    assert calls[0].endswith("/items/item%2F1")
+    assert redirect_calls == ["item%2F1"]
+
+
+@pytest.mark.asyncio
+async def test_onedrive_content_redirect_is_streamed_and_requires_exact_302(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    requested: list[tuple[bool, bool]] = []
+
+    class TrapStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            raise AssertionError("302 body must never be read")
+            yield b""  # pragma: no cover
+
+    class RedirectTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request):
+            requested.append(
+                (request.url.path.endswith("/content"), "authorization" in request.headers)
+            )
+            return httpx.Response(
+                302,
+                headers={"location": "https://tenant.sharepoint.com/fresh"},
+                stream=TrapStream(),
+            )
+
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        assert kwargs["follow_redirects"] is False
+        kwargs["transport"] = RedirectTransport()
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("app.sinks.onedrive.httpx.AsyncClient", fake_client)
+    sink = OneDriveSink("access")
+    assert (
+        await sink._download_redirect_for_item("item")
+        == "https://tenant.sharepoint.com/fresh"
+    )
+    assert requested == [(True, True)]
+
+    class WrongRedirectTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request):
+            return httpx.Response(
+                307,
+                headers={"location": "https://graph.microsoft.com/other"},
+                content=b"wrong redirect",
+            )
+
+    def wrong_client(*args, **kwargs):
+        kwargs["transport"] = WrongRedirectTransport()
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("app.sinks.onedrive.httpx.AsyncClient", wrong_client)
+    with pytest.raises(RuntimeError, match="307"):
+        await sink._download_redirect_for_item("item")
+
+    class BoundedErrorStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"x" * 256
+            raise AssertionError("error body must not be drained past 200 bytes")
+
+    class LargeErrorTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request):
+            return httpx.Response(500, stream=BoundedErrorStream())
+
+    def large_error_client(*args, **kwargs):
+        kwargs["transport"] = LargeErrorTransport()
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("app.sinks.onedrive.httpx.AsyncClient", large_error_client)
+    with pytest.raises(RuntimeError, match=r"500 b'x{200}'"):
+        await sink._download_redirect_for_item("item")
+
+
+@pytest.mark.asyncio
 async def test_completed_onedrive_native_video_survives_expired_source_login(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1101,7 +1272,17 @@ async def test_completed_onedrive_native_video_survives_expired_source_login(
     file_id = await db.create_file(
         job_id, "電影.mp4", size=123, source_fid="source-fid"
     )
-    await db.update_file(file_id, status="done", pcloud_fileid="od-native")
+    await db.update_file(
+        file_id,
+        status="done",
+        pcloud_fileid="od-native",
+        meta={
+            "onedrive_delivery": {
+                "drive_id": "drive-1",
+                "item_id": "od-native",
+            }
+        },
+    )
 
     class FakeSink:
         async def download_info_for_item(self, item_id):
@@ -1111,6 +1292,7 @@ async def test_completed_onedrive_native_video_survives_expired_source_login(
                 "name": "電影.mp4",
                 "size": 123,
                 "content_type": "video/mp4",
+                "drive_id": "drive-1",
             }
 
     async def fake_sink(_db):
@@ -1125,6 +1307,56 @@ async def test_completed_onedrive_native_video_survives_expired_source_login(
     assert stream.kind == "onedrive"
     assert stream.content_type == "video/mp4"
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_old_mkv_transcode_link_uses_completed_onedrive_without_quark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    test_db = Database(tmp_path / "old-mkv-transcode.db")
+    await test_db.connect()
+    job_id = await test_db.create_job(
+        "quark", "https://pan.quark.cn/s/x", destination="onedrive"
+    )
+    file_id = await test_db.create_file(
+        job_id, "電影.mkv", size=123, source_fid="source"
+    )
+    await test_db.update_file(
+        file_id,
+        status="done",
+        pcloud_fileid="od-item",
+        meta={
+            "onedrive_delivery": {
+                "drive_id": "drive-1",
+                "item_id": "od-item",
+            }
+        },
+    )
+
+    class FakeSink:
+        async def download_info_for_item(self, item_id):
+            return {
+                "url": "https://tenant.sharepoint.com/fresh",
+                "name": "電影.mkv",
+                "size": 123,
+                "content_type": "video/x-matroska",
+                "drive_id": "drive-1",
+            }
+
+    async def fake_sink(_db):
+        return FakeSink()
+
+    async def bomb_quark(_db):  # pragma: no cover
+        raise AssertionError("completed OneDrive must not load Quark")
+
+    monkeypatch.setattr("app.stream.resolve.make_onedrive_sink", fake_sink)
+    monkeypatch.setattr("app.stream.resolve.load_quark_source", bomb_quark)
+    src = await resolve_stream(
+        test_db, job_id, file_id, prefer_transcode=True
+    )
+    assert src.kind == "onedrive"
+    assert src.url == "https://tenant.sharepoint.com/fresh"
+    await test_db.close()
 
 
 @pytest.mark.asyncio
@@ -1193,8 +1425,345 @@ async def test_player_links_and_task_ui_offer_direct_infuse_and_windows_buttons(
     assert "/open/infuse" in task_html
     assert "/open/vlc" in task_html
     assert "/open/potplayer" in task_html
-    assert "v0.4.1 新版播放器" in task_html
+    assert "v0.4.2 · OneDrive 直連" in task_html
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_onedrive_player_links_bypass_oracle_media_proxy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    test_db = Database(tmp_path / "direct-onedrive-player.db")
+    await test_db.connect()
+    job_id = await test_db.create_job(
+        "quark", "https://pan.quark.cn/s/x", destination="onedrive"
+    )
+    file_id = await test_db.create_file(
+        job_id, "HEVC 電影.mkv", size=456, source_fid="f"
+    )
+    await test_db.update_file(
+        file_id,
+        status="done",
+        pcloud_fileid="onedrive-item",
+        meta={
+            "onedrive_delivery": {
+                "drive_id": "drive-a",
+                "item_id": "onedrive-item",
+            }
+        },
+    )
+    monkeypatch.setattr(routes_stream, "db", test_db)
+    direct_url = "https://public.dm.files.1drv.com/video?authkey=a%2Fb&download=1"
+
+    class FakeSink:
+        async def download_info_for_item(self, item_id: str):
+            assert item_id == "onedrive-item"
+            return {
+                "url": direct_url,
+                "name": "HEVC 電影.mkv",
+                "size": 456,
+                "content_type": "video/x-matroska",
+                "drive_id": "drive-a",
+            }
+
+    async def fake_sink(_db):
+        assert _db is test_db
+        return FakeSink()
+
+    monkeypatch.setattr("app.stream.resolve.make_onedrive_sink", fake_sink)
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": f"/api/tasks/{job_id}/files/{file_id}/player-links",
+        "raw_path": b"/player-links",
+        "query_string": b"",
+        "headers": [(b"host", b"152.70.86.29:8080")],
+        "client": ("127.0.0.1", 1),
+        "server": ("152.70.86.29", 8080),
+    }
+    request = Request(scope)
+
+    links_response = await routes_stream.player_links(
+        job_id, file_id, request, None
+    )
+    links = json.loads(links_response.body)
+    assert links["direct_onedrive"] is True
+    assert links["stream_url"] == direct_url
+    assert "/api/tasks/" not in links["stream_url"]
+    assert parse_qs(urlsplit(links["infuse_url"]).query)["url"] == [direct_url]
+
+    opened = await routes_stream.open_player(
+        job_id, file_id, "infuse", request, None
+    )
+    assert parse_qs(urlsplit(opened.headers["location"]).query)["url"] == [
+        direct_url
+    ]
+
+    playlist = await routes_stream.player_playlist(
+        job_id, file_id, request, None
+    )
+    assert playlist.body.decode().splitlines()[-1] == direct_url
+
+    page = await routes_stream.play_page(job_id, file_id, request, None)
+    page_html = page.body.decode()
+    assert "data-direct=\"1\"" not in page_html  # MKV remains external-only.
+    assert direct_url.replace("&", "&amp;") in page_html
+    assert "影片資料由播放器直接讀取 OneDrive，不再經過 Oracle" in page_html
+    assert "http://152.70.86.29:8080/api/tasks/" not in page_html
+    await test_db.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_onedrive_task_requires_explicit_account_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    test_db = Database(tmp_path / "legacy-onedrive-account.db")
+    await test_db.connect()
+    job_id = await test_db.create_job(
+        "quark", "https://pan.quark.cn/s/x", destination="onedrive"
+    )
+    file_id = await test_db.create_file(
+        job_id, "account-a.mkv", size=456, source_fid="f"
+    )
+    await test_db.update_file(file_id, status="done", pcloud_fileid="same-item")
+    monkeypatch.setattr(routes_stream, "db", test_db)
+
+    class AccountBSink:
+        async def download_info_for_item(self, item_id: str):
+            return {
+                "url": "https://tenant-b.sharepoint.com/wrong",
+                # Even an exact name/size match cannot prove ownership because
+                # item IDs are scoped to a drive.
+                "name": "account-a.mkv",
+                "size": 456,
+                "content_type": "video/x-matroska",
+                "drive_id": "drive-b",
+            }
+
+    async def fake_sink(_db):
+        return AccountBSink()
+
+    monkeypatch.setattr("app.stream.resolve.make_onedrive_sink", fake_sink)
+    job = await test_db.get_job(job_id)
+    file_row = await test_db.get_file(file_id)
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "headers": [(b"host", b"example.test")],
+        "client": ("127.0.0.1", 1),
+        "server": ("example.test", 80),
+    }
+    with pytest.raises(HTTPException, match="安全升級"):
+        await routes_stream._links_for_file(
+            Request(scope), job, file_row, "account-a.mkv"
+        )
+    stored = await test_db.get_file(file_id)
+    assert "onedrive_delivery" not in json.loads(stored["meta_json"])
+    await test_db.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_onedrive_precedes_leftover_local_staging_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    test_db = Database(tmp_path / "onedrive-leftover.db")
+    await test_db.connect()
+    job_id = await test_db.create_job(
+        "quark", "https://pan.quark.cn/s/x", destination="onedrive"
+    )
+    file_id = await test_db.create_file(
+        job_id, "movie.mkv", size=4, source_fid="source"
+    )
+    leftover = tmp_path / "movie.mkv"
+    leftover.write_bytes(b"old!")
+    await test_db.update_file(
+        file_id,
+        status="done",
+        pcloud_fileid="od-item",
+        local_path=str(leftover),
+        meta={
+            "onedrive_delivery": {
+                "drive_id": "drive-1",
+                "item_id": "od-item",
+            }
+        },
+    )
+
+    class FakeSink:
+        async def download_info_for_item(self, item_id: str):
+            return {
+                "url": "https://tenant.sharepoint.com/fresh",
+                "name": "movie.mkv",
+                "size": 4,
+                "content_type": "video/x-matroska",
+                "drive_id": "drive-1",
+            }
+
+    async def fake_sink(_db):
+        return FakeSink()
+
+    monkeypatch.setattr("app.stream.resolve.make_onedrive_sink", fake_sink)
+    src = await resolve_stream(test_db, job_id, file_id)
+    assert src.kind == "onedrive"
+    assert src.url == "https://tenant.sharepoint.com/fresh"
+    await test_db.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_onedrive_missing_item_id_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    test_db = Database(tmp_path / "onedrive-missing-item.db")
+    await test_db.connect()
+    job_id = await test_db.create_job(
+        "quark", "https://pan.quark.cn/s/x", destination="onedrive"
+    )
+    file_id = await test_db.create_file(
+        job_id, "movie.mkv", size=4, source_fid="source"
+    )
+    await test_db.update_file(file_id, status="done", pcloud_fileid="")
+    monkeypatch.setattr(routes_stream, "db", test_db)
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/stream",
+            "raw_path": b"/stream",
+            "query_string": b"",
+            "headers": [(b"host", b"example.test")],
+            "client": ("127.0.0.1", 1),
+            "server": ("example.test", 80),
+        }
+    )
+    with pytest.raises(HTTPException, match="缺少檔案 ID"):
+        await routes_stream.stream_file(
+            job_id,
+            file_id,
+            request,
+            token=make_stream_token(job_id, file_id),
+            transcode=True,
+        )
+    await test_db.close()
+
+
+@pytest.mark.asyncio
+async def test_old_stream_link_enforces_onedrive_drive_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    test_db = Database(tmp_path / "onedrive-stream-account.db")
+    await test_db.connect()
+    job_id = await test_db.create_job(
+        "quark", "https://pan.quark.cn/s/x", destination="onedrive"
+    )
+    file_id = await test_db.create_file(
+        job_id, "movie.mkv", size=4, source_fid="source"
+    )
+    await test_db.update_file(
+        file_id,
+        status="done",
+        pcloud_fileid="same-item",
+        meta={
+            "onedrive_delivery": {
+                "drive_id": "drive-a",
+                "item_id": "same-item",
+            }
+        },
+    )
+    monkeypatch.setattr(routes_stream, "db", test_db)
+
+    class AccountBSink:
+        async def download_info_for_item(self, item_id: str):
+            return {
+                "url": "https://tenant-b.sharepoint.com/wrong",
+                "name": "movie.mkv",
+                "size": 4,
+                "content_type": "video/x-matroska",
+                "drive_id": "drive-b",
+            }
+
+    async def fake_sink(_db):
+        return AccountBSink()
+
+    monkeypatch.setattr("app.stream.resolve.make_onedrive_sink", fake_sink)
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/stream",
+            "raw_path": b"/stream",
+            "query_string": b"",
+            "headers": [(b"host", b"example.test")],
+            "client": ("127.0.0.1", 1),
+            "server": ("example.test", 80),
+        }
+    )
+    with pytest.raises(HTTPException, match="另一個 OneDrive") as caught:
+        await routes_stream.stream_file(
+            job_id,
+            file_id,
+            request,
+            token=make_stream_token(job_id, file_id),
+            transcode=True,
+        )
+    assert caught.value.status_code == 400
+    assert not caught.value.headers
+    await test_db.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_onedrive_retires_old_hls_assets_without_loading_quark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    test_db = Database(tmp_path / "onedrive-old-hls.db")
+    await test_db.connect()
+    job_id = await test_db.create_job(
+        "quark", "https://pan.quark.cn/s/x", destination="onedrive"
+    )
+    file_id = await test_db.create_file(
+        job_id, "movie.mkv", size=4, source_fid="source"
+    )
+    await test_db.update_file(file_id, status="done", pcloud_fileid="od-item")
+    monkeypatch.setattr(routes_stream, "db", test_db)
+
+    async def bomb_quark(_db):  # pragma: no cover
+        raise AssertionError("completed OneDrive HLS must not load Quark")
+
+    monkeypatch.setattr(routes_stream, "load_quark_source", bomb_quark)
+    token = make_hls_asset_token(
+        job_id, file_id, "https://video.pds.quark.cn/segment.ts"
+    )
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/hls-asset",
+            "raw_path": b"/hls-asset",
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 1),
+            "server": ("example.test", 80),
+        }
+    )
+    with pytest.raises(HTTPException) as caught:
+        await routes_stream.hls_asset(
+            job_id, file_id, request, asset=token
+        )
+    assert caught.value.status_code == 410
+    assert caught.value.headers["Cache-Control"] == "private, no-store"
+    await test_db.close()
 
 
 @pytest.mark.asyncio

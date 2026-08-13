@@ -831,12 +831,28 @@ class Worker:
             if size_final <= 0:
                 size_final = size_now
 
+            delivery_meta = dict(meta)
+            if "OneDrive" in type(sink).__name__:
+                drive_id = str(
+                    (meta_up.get("parentReference") or {}).get("driveId") or ""
+                )
+                if not drive_id:
+                    info_up = await sink.download_info_for_item(stored)
+                    drive_id = str(info_up.get("drive_id") or "")
+                if not drive_id:
+                    raise RuntimeError("OneDrive 上傳完成但無法確認 Drive 身分")
+                delivery_meta["onedrive_delivery"] = {
+                    "drive_id": drive_id,
+                    "item_id": stored,
+                }
+
             await self.db.update_file(
                 file_id,
                 status="done",
                 uploaded_bytes=size_final,
                 pcloud_fileid=stored,
                 pcloud_path=final_remote,
+                meta=delivery_meta,
             )
             # cleanup tmp leftovers (LocalSink already moved the main file — do not delete dest)
             try:

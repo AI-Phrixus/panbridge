@@ -34,6 +34,43 @@ class StreamSource:
     content_type: str = "application/octet-stream"
 
 
+async def completed_onedrive_info(
+    db: Database, job: dict, file_row: dict
+) -> dict[str, Any] | None:
+    """Return a verified current-account OneDrive item or fail closed."""
+    completed_onedrive = (
+        file_row.get("status") == "done"
+        and str(job.get("destination") or "").lower() == "onedrive"
+    )
+    if not completed_onedrive:
+        return None
+    item_id = str(file_row.get("pcloud_fileid") or "")
+    if not item_id:
+        raise RuntimeError("OneDrive 完成檔缺少檔案 ID，已停止不安全的來源回退")
+    sink = await make_onedrive_sink(db)
+    info = await sink.download_info_for_item(item_id)
+    try:
+        file_meta = json.loads(file_row.get("meta_json") or "{}")
+    except Exception:
+        file_meta = {}
+    delivery = file_meta.get("onedrive_delivery") or {}
+    expected_drive_id = str(delivery.get("drive_id") or "")
+    actual_drive_id = str(info.get("drive_id") or "")
+    if not actual_drive_id:
+        raise RuntimeError("OneDrive 未返回檔案所屬 Drive ID")
+    if expected_drive_id:
+        if expected_drive_id != actual_drive_id:
+            raise RuntimeError("此任務屬於另一個 OneDrive，請切回原帳號")
+    else:
+        # A DriveItem ID is only meaningful inside its drive. Name and size
+        # are not a safe ownership proof when the user reconnects a different
+        # Microsoft account, so legacy rows require an explicit admin migration.
+        raise RuntimeError(
+            "舊任務尚未綁定 OneDrive 帳號，請由管理員完成一次安全升級"
+        )
+    return info
+
+
 def is_video_name(name: str) -> bool:
     return Path(name).suffix.lower() in VIDEO_EXT
 
@@ -70,15 +107,9 @@ async def resolve_stream(
     }.get(suffix, "application/octet-stream")
 
     async def completed_onedrive() -> StreamSource | None:
-        item_id = str(f.get("pcloud_fileid") or "")
-        if (
-            f.get("status") != "done"
-            or str(job.get("destination") or "").lower() != "onedrive"
-            or not item_id
-        ):
+        info = await completed_onedrive_info(db, job, f)
+        if not info:
             return None
-        sink = await make_onedrive_sink(db)
-        info = await sink.download_info_for_item(item_id)
         return StreamSource(
             kind="onedrive",
             url=str(info["url"]),
@@ -88,7 +119,14 @@ async def resolve_stream(
             content_type=str(info.get("content_type") or ctype),
         )
 
-    # 1) Local delivered / partial complete file
+    # A completed OneDrive copy is always authoritative, including old links
+    # carrying transcode=1 for MKV/HEVC. Check it before any leftover local
+    # staging file so Oracle can never serve completed media bytes.
+    onedrive = await completed_onedrive()
+    if onedrive:
+        return onedrive
+
+    # 1) Local delivered / partial complete file for non-OneDrive-complete jobs
     candidates: list[Path] = []
     if f.get("pcloud_fileid") and str(f["pcloud_fileid"]).startswith("/"):
         candidates.append(Path(str(f["pcloud_fileid"])))
@@ -115,28 +153,6 @@ async def resolve_stream(
                 content_type=ctype,
             )
 
-    # External players should use the completed OneDrive copy. It is fresh,
-    # supports Range, and remains available if the original netdisk login or
-    # temporary download URL expires.
-    if not prefer_transcode:
-        try:
-            onedrive = await completed_onedrive()
-            if onedrive:
-                return onedrive
-        except Exception:
-            # A temporary Graph error must not make the source copy unplayable.
-            pass
-
-    # MP4/WebM/MOV/M4V need no cloud transcoding. Prefer the completed copy in
-    # browsers too, so playback survives an expired Quark/Baidu login.
-    if prefer_transcode and suffix in BROWSER_NATIVE_EXT:
-        try:
-            onedrive = await completed_onedrive()
-            if onedrive:
-                return onedrive
-        except Exception:
-            pass
-
     # 2) Source netdisk direct stream (no need to fully download first)
     source_type = job["source_type"]
     if source_type == "baidu":
@@ -144,13 +160,6 @@ async def resolve_stream(
             raise RuntimeError(
                 "此影片格式無法直接在網頁解碼，請按 Infuse、VLC 或 PotPlayer 播放"
             )
-        if prefer_transcode:
-            try:
-                onedrive = await completed_onedrive()
-                if onedrive:
-                    return onedrive
-            except Exception:
-                pass
         enc = await db.get_credential("baidu")
         if not enc:
             raise RuntimeError("百度未登录")
@@ -199,12 +208,6 @@ async def resolve_stream(
                     raise RuntimeError(
                         f"夸克網頁轉碼暫不可用（{error}）；請按 Infuse、VLC 或 PotPlayer 播放原畫"
                     ) from error
-                try:
-                    onedrive = await completed_onedrive()
-                    if onedrive:
-                        return onedrive
-                except Exception:
-                    pass
         url = await src.prepare_download(sf, {})
         return StreamSource(
             kind="quark",

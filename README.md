@@ -7,7 +7,7 @@
 
 | | |
 |--|--|
-| **版本** | v0.4.1 |
+| **版本** | v0.4.2 |
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
 | **核心能力** | 貼連結即跑 · 斷點續傳 · 大檔 OneDrive · 串流播放 |
@@ -163,6 +163,13 @@ Dockerfile     容器
 ---
 
 ## Changelog（摘要）
+
+### v0.4.2
+- 完成搬運的 OneDrive 影片改用 Microsoft 官方 `/content` 302 HTTPS 直鏈；Infuse、VLC、PotPlayer 與 `.m3u` 不再經 Oracle 傳輸影片資料
+- 相容 Graph 未返回 `@microsoft.graph.downloadUrl` 的個人／商務 OneDrive，並保留 Range 拖曳與大檔播放能力
+- 舊 PanBridge 播放連結自動 307 跳轉到最新 OneDrive 直鏈；舊 HLS 分片安全停用，不再回退夸克或百度代理
+- OneDrive 完成檔綁定 Drive 身分、名稱與大小；重連其他帳號或資料不完整時安全停止，避免跨帳號誤播
+- 播放按鈕改為點擊時即時取得短效直鏈，避免頁面久放後連結過期
 
 ### v0.4.0
 - 夸克 `__puus` / `__pus` 輪換 Cookie 自動合併並持久化；續傳同步刷新直鏈與請求頭

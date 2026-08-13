@@ -28,7 +28,7 @@ from app.security import (
     verify_session_token,
     verify_stream_token,
 )
-from app.stream.resolve import resolve_stream
+from app.stream.resolve import completed_onedrive_info, resolve_stream
 
 router = APIRouter(tags=["stream"])
 
@@ -54,26 +54,32 @@ def _content_disposition(filename: str) -> str:
 
 
 def _player_links(
-    request: Request, job_id: int, file_id: int, filename: str
-) -> dict[str, str]:
-    """Build one scoped stream URL and platform-specific deep links."""
+    request: Request,
+    job_id: int,
+    file_id: int,
+    filename: str,
+    *,
+    direct_url: str = "",
+) -> dict[str, str | bool]:
+    """Build platform links, preferring a fresh OneDrive HTTPS URL."""
     token = make_stream_token(job_id, file_id)
     stream_path = (
         f"/api/tasks/{job_id}/files/{file_id}/stream"
         f"?token={quote(token, safe='')}"
     )
-    stream_url = _public_base(request) + stream_path
+    stream_url = direct_url or (_public_base(request) + stream_path)
     encoded_url = quote(stream_url, safe="")
     encoded_name = quote(
         str(filename).replace("\r", " ").replace("\n", " "), safe=""
     )
     return {
-        "stream_path": stream_path,
+        "stream_path": direct_url or stream_path,
         # Keep the compatibility key for existing clients, but serve the
         # original file directly. Quark's browser transcode endpoint currently
         # returns plf_invalid and can otherwise delay every native MP4 play.
-        "browser_stream_path": stream_path,
+        "browser_stream_path": direct_url or stream_path,
         "stream_url": stream_url,
+        "direct_onedrive": bool(direct_url),
         "infuse_url": (
             "infuse://x-callback-url/play"
             f"?url={encoded_url}&filename={encoded_name}"
@@ -89,6 +95,37 @@ def _player_links(
         "potplayer_url": "potplayer://" + stream_url,
         "playlist_path": f"/api/tasks/{job_id}/files/{file_id}/playlist.m3u",
     }
+
+
+async def _links_for_file(
+    request: Request,
+    job: dict,
+    file_row: dict,
+    filename: str,
+) -> dict[str, str | bool]:
+    """Resolve completed OneDrive files just in time for the chosen player."""
+    direct_url = ""
+    if (
+        file_row.get("status") == "done"
+        and str(job.get("destination") or "").lower() == "onedrive"
+    ):
+        try:
+            info = await completed_onedrive_info(db, job, file_row)
+            if not info:
+                raise RuntimeError("OneDrive 完成檔資料不完整")
+            direct_url = str(info.get("url") or "")
+        except Exception as error:
+            raise HTTPException(
+                502,
+                f"無法取得 OneDrive 播放直鏈，請在設定頁重新連接 OneDrive：{error}",
+            ) from error
+    return _player_links(
+        request,
+        int(job["id"]),
+        int(file_row["id"]),
+        filename,
+        direct_url=direct_url,
+    )
 
 
 def _parse_range(value: str, size: int) -> tuple[int, int]:
@@ -215,6 +252,15 @@ async def stream_file(
         raise HTTPException(404, "not found")
     except Exception as e:
         raise HTTPException(400, str(e)) from e
+
+    # Completed OneDrive files are never media-proxied. This also upgrades old
+    # seven-day PanBridge tokens/playlists to the latest Microsoft HTTPS URL.
+    if src.kind == "onedrive" and src.url:
+        return RedirectResponse(
+            src.url,
+            status_code=307,
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     range_header = request.headers.get("range") or request.headers.get("Range")
 
@@ -414,6 +460,15 @@ async def hls_asset(
     file_row = await db.get_file(file_id)
     if not job or not file_row or file_row["job_id"] != job_id:
         raise HTTPException(404, "not found")
+    if (
+        file_row.get("status") == "done"
+        and str(job.get("destination") or "").lower() == "onedrive"
+    ):
+        raise HTTPException(
+            410,
+            "此舊播放分片已停用，請重新按 OneDrive 直連播放器",
+            headers={"Cache-Control": "private, no-store"},
+        )
     if job["source_type"] != "quark":
         raise HTTPException(400, "HLS proxy is unavailable for this source")
 
@@ -511,12 +566,8 @@ async def player_playlist(
     if not job or not file_row or file_row["job_id"] != job_id:
         raise HTTPException(404, "not found")
     name = str(file_row.get("remote_name") or "video").replace("\r", " ").replace("\n", " ")
-    token = make_stream_token(job_id, file_id)
-    stream_path = (
-        f"/api/tasks/{job_id}/files/{file_id}/stream"
-        f"?token={quote(token, safe='')}"
-    )
-    stream_url = _public_base(request) + stream_path
+    links = await _links_for_file(request, job, file_row, name)
+    stream_url = str(links["stream_url"])
     playlist = f"#EXTM3U\n#EXTINF:-1,{name}\n{stream_url}\n"
     download_name = (Path(name).stem or "panbridge") + ".m3u"
     disposition = _content_disposition(download_name).replace("inline;", "attachment;", 1)
@@ -554,7 +605,7 @@ async def player_links(
     }:
         raise HTTPException(400, "not a supported video file")
     return JSONResponse(
-        {**_player_links(request, job_id, file_id, name), "filename": name},
+        {**(await _links_for_file(request, job, file_row, name)), "filename": name},
         headers={"Cache-Control": "private, no-store"},
     )
 
@@ -573,7 +624,7 @@ async def open_player(
     if not job or not file_row or file_row["job_id"] != job_id:
         raise HTTPException(404, "not found")
     name = str(file_row.get("remote_name") or "video")
-    links = _player_links(request, job_id, file_id, name)
+    links = await _links_for_file(request, job, file_row, name)
     target_key = {
         "infuse": "infuse_url",
         "vlc": "vlc_url",
@@ -598,22 +649,23 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
 
     name = f.get("remote_name") or "video"
     size = int(f.get("size") or 0)
-    links = _player_links(request, job_id, file_id, str(name))
-    stream_path = links["stream_path"]
-    browser_stream_path = links["browser_stream_path"]
-    stream_url = links["stream_url"]
+    links = await _links_for_file(request, job, f, str(name))
+    stream_path = str(links["stream_path"])
+    browser_stream_path = str(links["browser_stream_path"])
+    stream_url = str(links["stream_url"])
     ext = Path(name).suffix.lower()
     web_playable = ext in {".mp4", ".webm", ".mov", ".m4v"}
 
     safe_stream_path = html.escape(stream_path, quote=True)
     safe_browser_stream_path = html.escape(browser_stream_path, quote=True)
     safe_stream_url = html.escape(stream_url, quote=True)
-    safe_infuse = html.escape(links["infuse_url"], quote=True)
-    safe_vlc_web = html.escape(links["vlc_url"], quote=True)
+    open_base = f"/api/tasks/{job_id}/files/{file_id}/open"
+    safe_infuse = html.escape(f"{open_base}/infuse", quote=True)
+    safe_vlc_web = html.escape(f"{open_base}/vlc", quote=True)
     safe_android_vlc = html.escape(links["vlc_android_url"], quote=True)
     safe_ios_vlc = html.escape(links["vlc_ios_url"], quote=True)
-    safe_iina = html.escape(links["iina_url"], quote=True)
-    safe_pot = html.escape(links["potplayer_url"], quote=True)
+    safe_iina = html.escape(f"{open_base}/iina", quote=True)
+    safe_pot = html.escape(f"{open_base}/potplayer", quote=True)
     safe_playlist_path = html.escape(links["playlist_path"], quote=True)
 
     size_gb = size / 1024 / 1024 / 1024 if size else 0
@@ -624,6 +676,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
         video_tag = f'''
         <video id="v" controls playsinline preload="metadata"
           data-stream="{safe_browser_stream_path}"
+          data-direct="{1 if links['direct_onedrive'] else 0}"
           style="width:100%;max-height:70vh;background:#000;border-radius:12px"></video>
         <p id="playerMsg" class="muted"></p>'''
     else:
@@ -645,7 +698,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>播放 · {safe_name}</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.1" />
+  <link rel="stylesheet" href="/static/style.css?v=0.4.2" />
   <script async id="hlsLibrary" src="/static/vendor/hls.light.min.js"
     integrity="sha384-R/A0SfcLw9wTUjx6JTLqfFBfDpC0DQOKgiff7C516hTFU9AWjNDazyoPSfFhD3sx"
     crossorigin="anonymous"></script>
@@ -665,7 +718,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
 <body>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span> 播放 <small style="font-size:.65rem">v0.4.1 新版</small></div>
+      <div class="logo">Pan<span>Bridge</span> 播放 <small style="font-size:.65rem">v0.4.2 · OneDrive 直連</small></div>
       <nav>
         <a href="/tasks/{job_id}">← 返回任务</a>
         <a href="/">任务列表</a>
@@ -680,7 +733,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
 
     <div class="card">
       <h3>用專業播放器開啟（推薦）</h3>
-      <p class="muted">此為 7 天限時播放器連結，不需要瀏覽器登入 Cookie。若按鈕無反應：複製串流地址 → 打開播放器 →「媒體/打開網路串流」貼上播放。</p>
+      <p class="muted">搬運完成後會取得最新 OneDrive HTTPS 臨時直鏈；影片資料由播放器直接讀取 OneDrive，不再經過 Oracle。若按鈕無反應：下載 .m3u，或複製直鏈到播放器的「打開網路串流」。</p>
       <div class="play-actions">
         <a class="primary" href="{safe_infuse}">Infuse（Apple）</a>
         <a href="{safe_vlc_web}">VLC（Mac / Windows）</a>
@@ -720,6 +773,12 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
       const source = video.dataset.stream;
       const message = document.getElementById('playerMsg');
       try {{
+        if (video.dataset.direct === '1') {{
+          playerStarted = true;
+          video.src = source;
+          video.load();
+          return;
+        }}
         const probe = await fetch(source, {{method: 'HEAD', cache: 'no-store'}});
         const type = (probe.headers.get('content-type') || '').toLowerCase();
         if (!probe.ok) {{

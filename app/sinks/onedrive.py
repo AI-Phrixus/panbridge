@@ -65,10 +65,19 @@ class OneDriveSink:
             log.warning("onedrive token refresh failed: %s", e)
             return False
 
-    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        follow_redirects: bool = True,
+        **kwargs,
+    ) -> httpx.Response:
         extra_headers = dict(kwargs.pop("headers", None) or {})
         headers = {**self._headers(), **extra_headers}
-        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=_TIMEOUT, follow_redirects=follow_redirects
+        ) as client:
             r = await client.request(method, url, headers=headers, **kwargs)
             if r.status_code == 401 and await self._refresh():
                 headers = {**self._headers(), **extra_headers}
@@ -92,18 +101,33 @@ class OneDriveSink:
         r = await self._request(
             "GET",
             f"{GRAPH}/me/drive/items/{safe_id}",
-            params={
-                "$select": "id,name,size,file,@microsoft.graph.downloadUrl"
-            },
+            params={"$select": "id,name,size,file,parentReference"},
         )
         if r.status_code >= 400:
             raise RuntimeError(
                 f"onedrive download link: {r.status_code} {r.text[:200]}"
             )
         data = r.json()
-        download_url = str(data.get("@microsoft.graph.downloadUrl") or "")
+        drive_id = str((data.get("parentReference") or {}).get("driveId") or "")
+        if not drive_id:
+            raise RuntimeError("OneDrive 未返回檔案所屬 Drive ID")
+        # Personal OneDrive no longer consistently returns the instance
+        # annotation even when it is selected. Graph's documented /content
+        # endpoint always returns the same short-lived URL in a 302 Location.
+        download_url = await self._download_redirect_for_item(safe_id)
         parsed = httpx.URL(download_url)
-        if parsed.scheme != "https" or not parsed.host:
+        host = str(parsed.host or "").lower().rstrip(".")
+        microsoft_download_host = any(
+            host == suffix or host.endswith("." + suffix)
+            for suffix in ("1drv.com", "sharepoint.com", "sharepoint.cn")
+        )
+        if (
+            parsed.scheme != "https"
+            or not microsoft_download_host
+            or parsed.port not in (None, 443)
+            or parsed.username
+            or parsed.password
+        ):
             raise RuntimeError("OneDrive 未返回安全的下載網址")
         file_meta = data.get("file") or {}
         return {
@@ -113,7 +137,40 @@ class OneDriveSink:
             "content_type": str(
                 file_meta.get("mimeType") or "application/octet-stream"
             ),
+            "drive_id": drive_id,
         }
+
+    async def _download_redirect_for_item(self, safe_id: str) -> str:
+        """Read only Graph's 302 headers; never buffer the file response body."""
+        url = f"{GRAPH}/me/drive/items/{safe_id}/content"
+        for attempt in range(2):
+            headers = self._headers()
+            async with httpx.AsyncClient(
+                timeout=_TIMEOUT, follow_redirects=False
+            ) as client:
+                request = client.build_request("GET", url, headers=headers)
+                response = await client.send(request, stream=True)
+                try:
+                    if response.status_code == 401 and attempt == 0:
+                        if await self._refresh():
+                            continue
+                    if response.status_code != 302:
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            remaining = 200 - len(body)
+                            if remaining <= 0:
+                                break
+                            body.extend(chunk[:remaining])
+                            if len(body) >= 200:
+                                break
+                        raise RuntimeError(
+                            "onedrive content redirect: "
+                            f"{response.status_code} {bytes(body)!r}"
+                        )
+                    return str(response.headers.get("location") or "")
+                finally:
+                    await response.aclose()
+        raise RuntimeError("OneDrive token 失效，請重新登入")
 
     async def ensure_folder_path(self, path: str) -> str:
         """Create nested folders under root; return item id of final folder."""
