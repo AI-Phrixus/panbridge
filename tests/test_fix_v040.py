@@ -39,7 +39,7 @@ from app.sources.base import SourceFile
 from app.sources.quark import QuarkSource
 from app.sources.quark import QuarkAuthenticationError
 from app.sinks.pcloud import PCloudSink
-from app.sinks.onedrive import OneDriveSink
+from app.sinks.onedrive import CHUNK, OneDriveSink
 from app.stream.resolve import StreamSource, resolve_stream
 from app.transfer.downloader import (
     _prepare_single_stream_resume,
@@ -771,7 +771,7 @@ async def test_player_playlist_supports_windows_vlc_potplayer_and_infuse(
     assert "Windows / VLC" in page_html
     assert "Infuse 付費版" in page_html
     assert f'href="/api/tasks/{job_id}/files/{file_id}/open/infuse"' in page_html
-    assert "v0.4.2 · OneDrive 直連" in page_html
+    assert "v0.4.3 · OneDrive 直連" in page_html
     assert page.headers["cache-control"] == "no-store"
     assert '<video id="v"' not in page_html
     assert "transcode=1" not in page_html
@@ -860,6 +860,146 @@ async def test_pcloud_large_upload_uses_streaming_documented_multipart_post(
     assert b'name="file"' in request_body
     assert progress[-1] == len(payload)
     assert result["size"] == len(payload)
+
+
+@pytest.mark.asyncio
+async def test_onedrive_chunk_upload_is_exact_and_rejects_remote_size_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    payload = bytes(range(251)) * ((CHUNK + 37) // 251 + 1)
+    payload = payload[: CHUNK + 37]
+    source = tmp_path / "large.bin"
+    source.write_bytes(payload)
+    sink = OneDriveSink("access")
+
+    async def fake_folder(_path: str) -> str:
+        return "folder"
+
+    async def fake_request(method: str, url: str, **kwargs):
+        assert method == "POST"
+        assert url.endswith("/createUploadSession")
+        return httpx.Response(200, json={"uploadUrl": "https://upload.example/session"})
+
+    monkeypatch.setattr(sink, "ensure_folder_path", fake_folder)
+    monkeypatch.setattr(sink, "_request", fake_request)
+
+    uploaded = bytearray(len(payload))
+    ranges: list[tuple[int, int]] = []
+    reported_size = len(payload)
+
+    class UploadClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def put(self, url: str, content: bytes, headers: dict[str, str]):
+            assert url == "https://upload.example/session"
+            raw_range, raw_total = headers["Content-Range"].removeprefix(
+                "bytes "
+            ).split("/")
+            start_s, end_s = raw_range.split("-")
+            start, end, total = int(start_s), int(end_s), int(raw_total)
+            assert total == len(payload)
+            assert len(content) == end - start + 1
+            assert content == payload[start : end + 1]
+            uploaded[start : end + 1] = content
+            ranges.append((start, end))
+            if end + 1 < len(payload):
+                return httpx.Response(
+                    202, json={"nextExpectedRanges": [f"{end + 1}-"]}
+                )
+            return httpx.Response(
+                201,
+                json={
+                    "id": "item",
+                    "name": "large.bin",
+                    "size": reported_size,
+                    "parentReference": {"driveId": "drive"},
+                },
+            )
+
+    monkeypatch.setattr("app.sinks.onedrive.httpx.AsyncClient", UploadClient)
+    progress: list[int] = []
+
+    async def report(done: int, total: int):
+        assert total == len(payload)
+        progress.append(done)
+
+    result = await sink.upload_file(source, "/PanBridge", "large.bin", report)
+    assert bytes(uploaded) == payload
+    assert ranges == [(0, CHUNK - 1), (CHUNK, len(payload) - 1)]
+    assert progress[-1] == len(payload)
+    assert result["size"] == len(payload)
+
+    reported_size = len(payload) + 1
+    with pytest.raises(RuntimeError, match="上傳後資料不符"):
+        await sink.upload_file(source, "/PanBridge", "large.bin")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,body",
+    [
+        (201, {}),
+        (201, {"id": "item", "size": 0}),
+        (201, {"id": "item", "size": 101}),
+        (202, {"id": "item", "size": 100}),
+    ],
+)
+async def test_onedrive_small_upload_requires_exact_final_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    body: dict,
+):
+    source = tmp_path / "small.bin"
+    source.write_bytes(b"x" * 100)
+    sink = OneDriveSink("access")
+
+    async def fake_folder(_path: str) -> str:
+        return "folder"
+
+    async def fake_request(method: str, url: str, **kwargs):
+        return httpx.Response(status, json=body)
+
+    monkeypatch.setattr(sink, "ensure_folder_path", fake_folder)
+    monkeypatch.setattr(sink, "_request", fake_request)
+    with pytest.raises(RuntimeError):
+        await sink.upload_file(source, "/PanBridge", "small.bin")
+
+
+@pytest.mark.asyncio
+async def test_onedrive_small_upload_accepts_exact_final_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = tmp_path / "small.bin"
+    source.write_bytes(b"x" * 100)
+    sink = OneDriveSink("access")
+
+    async def fake_folder(_path: str) -> str:
+        return "folder"
+
+    async def fake_request(method: str, url: str, **kwargs):
+        return httpx.Response(
+            201,
+            json={
+                "id": "item",
+                "name": "small.bin",
+                "size": 100,
+                "parentReference": {"driveId": "drive"},
+            },
+        )
+
+    monkeypatch.setattr(sink, "ensure_folder_path", fake_folder)
+    monkeypatch.setattr(sink, "_request", fake_request)
+    result = await sink.upload_file(source, "/PanBridge", "small.bin")
+    assert result["id"] == "item"
+    assert result["size"] == 100
 
 
 @pytest.mark.asyncio
@@ -1425,7 +1565,7 @@ async def test_player_links_and_task_ui_offer_direct_infuse_and_windows_buttons(
     assert "/open/infuse" in task_html
     assert "/open/vlc" in task_html
     assert "/open/potplayer" in task_html
-    assert "v0.4.2 · OneDrive 直連" in task_html
+    assert "v0.4.3 · OneDrive 直連" in task_html
     await db.close()
 
 
@@ -1900,4 +2040,67 @@ async def test_oversized_staged_final_is_redownloaded_not_uploaded(
     saved = await db.get_file(file_id)
     assert saved["status"] == "done"
     assert saved["uploaded_bytes"] == 100
+    await db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "remote_meta",
+    [
+        {"fileid": "corrupt", "size": 101},
+        {"fileid": "missing-size"},
+        {"size": 100},
+    ],
+)
+async def test_worker_refuses_remote_upload_metadata_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    remote_meta: dict,
+):
+    db = Database(tmp_path / "remote-size.db")
+    await db.connect()
+    job_id = await db.create_job("quark", "https://pan.quark.cn/s/x")
+    file_id = await db.create_file(
+        job_id, "movie.bin", size=100, source_fid="f1"
+    )
+    file_row = await db.get_file(file_id)
+    worker = Worker(db)
+    job_tmp = tmp_path / "job"
+    job_tmp.mkdir()
+
+    class FakeSource:
+        async def prepare_download(self, source_file, share_meta):
+            return "https://video.pds.quark.cn/file"
+
+        def get_download_headers(self):
+            return {"cookie": "base=1"}
+
+    class FakeSink:
+        async def upload_file(
+            self, local_path, remote_dir, filename, progress_cb=None
+        ):
+            assert local_path.stat().st_size == 100
+            if progress_cb:
+                await progress_cb(100, 100)
+            return remote_meta
+
+    async def fake_download(url, dest, **kwargs):
+        dest.write_bytes(b"z" * 100)
+        await kwargs["progress_cb"](100, 100)
+        return dest
+
+    monkeypatch.setattr("app.workers.runner.resumable_download", fake_download)
+    with pytest.raises(RuntimeError, match="遠端上傳未返回|遠端檔案大小不符"):
+        await worker._process_file(
+            FakeSource(),
+            FakeSink(),
+            job_id,
+            file_row,
+            "/PanBridge",
+            job_tmp,
+            {},
+        )
+    saved = await db.get_file(file_id)
+    assert saved["status"] == "failed"
+    assert not saved["pcloud_fileid"]
     await db.close()

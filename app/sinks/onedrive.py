@@ -255,11 +255,28 @@ class OneDriveSink:
             url = f"{GRAPH}/me/drive/items/{folder_id}:/{quote(filename)}:/content"
             data = local_path.read_bytes()
             r = await self._request("PUT", url, content=data, headers={"Content-Type": "application/octet-stream"})
-            if r.status_code >= 400:
+            if r.status_code not in (200, 201):
                 raise RuntimeError(f"onedrive upload failed: {r.status_code} {r.text[:300]}")
+            try:
+                result = r.json()
+            except Exception as error:
+                raise RuntimeError(
+                    "OneDrive 完成上傳但未返回可核對的檔案資料"
+                ) from error
+            if not isinstance(result, dict) or "size" not in result:
+                raise RuntimeError(
+                    "OneDrive 完成上傳但未返回可核對的檔案資料"
+                )
+            remote_id = str(result.get("id") or "")
+            remote_size = int(result.get("size") or 0)
+            if not remote_id or remote_size != size:
+                raise RuntimeError(
+                    "OneDrive 上傳後資料不符: "
+                    f"id={bool(remote_id)} local={size} remote={remote_size}"
+                )
             if progress_cb:
                 await progress_cb(size, size)
-            return r.json()
+            return result
 
         # upload session for large files
         sess_url = f"{GRAPH}/me/drive/items/{folder_id}:/{quote(filename)}:/createUploadSession"
@@ -299,7 +316,24 @@ class OneDriveSink:
                                 try:
                                     final_item = ur.json()
                                 except Exception:
-                                    final_item = {"name": filename, "size": size}
+                                    raise RuntimeError(
+                                        "OneDrive 完成上傳但未返回可核對的檔案資料"
+                                    )
+                                if (
+                                    not isinstance(final_item, dict)
+                                    or "size" not in final_item
+                                ):
+                                    raise RuntimeError(
+                                        "OneDrive 完成上傳但未返回可核對的檔案資料"
+                                    )
+                                remote_size = int(final_item.get("size") or 0)
+                                remote_id = str(final_item.get("id") or "")
+                                if not remote_id or remote_size != size:
+                                    raise RuntimeError(
+                                        "OneDrive 上傳後資料不符: "
+                                        f"id={bool(remote_id)} local={size} "
+                                        f"remote={remote_size}"
+                                    )
                                 return final_item
                             last_err = None
                             break

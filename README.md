@@ -7,7 +7,7 @@
 
 | | |
 |--|--|
-| **版本** | v0.4.2 |
+| **版本** | v0.4.3 |
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
 | **核心能力** | 貼連結即跑 · 斷點續傳 · 大檔 OneDrive · 串流播放 |
@@ -163,6 +163,10 @@ Dockerfile     容器
 ---
 
 ## Changelog（摘要）
+
+### v0.4.3
+- OneDrive 完成回應與 Worker 雙重核對遠端大小；任何多一段、少一段或缺少 metadata 的上傳都不再標記完成
+- 舊版受損／遺失檔案可安全重新排隊，由已修復的續傳下載與分塊上傳覆蓋修復
 
 ### v0.4.2
 - 完成搬運的 OneDrive 影片改用 Microsoft 官方 `/content` 302 HTTPS 直鏈；Infuse、VLC、PotPlayer 與 `.m3u` 不再經 Oracle 傳輸影片資料

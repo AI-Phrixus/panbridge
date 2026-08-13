@@ -13,7 +13,7 @@ sudo journalctl -u panbridge -f
 
 ```bash
 curl -s http://127.0.0.1:8080/api/health
-# {"ok":true,"version":"0.4.2"}
+# {"ok":true,"version":"0.4.3"}
 ```
 
 ## 任務

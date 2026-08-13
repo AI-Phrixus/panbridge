@@ -825,11 +825,16 @@ class Worker:
             is_local = "LocalSink" in type(sink).__name__
             stored = str(meta_up.get("path") or meta_up.get("fileid") or meta_up.get("id") or "")
             # Fix operator-precedence bug: meta size must win even after LocalSink move
+            if "size" not in meta_up:
+                raise RuntimeError("遠端上傳未返回檔案大小，拒絕標記完成")
             size_final = int(meta_up.get("size") or 0)
-            if size_final <= 0 and local_upload.exists():
-                size_final = local_upload.stat().st_size
-            if size_final <= 0:
-                size_final = size_now
+            if not stored:
+                raise RuntimeError("遠端上傳未返回檔案 ID／路徑，拒絕標記完成")
+            if size_final != size_now:
+                raise RuntimeError(
+                    "遠端檔案大小不符，拒絕標記完成: "
+                    f"local={size_now} remote={size_final}"
+                )
 
             delivery_meta = dict(meta)
             if "OneDrive" in type(sink).__name__:
