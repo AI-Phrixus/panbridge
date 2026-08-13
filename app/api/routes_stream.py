@@ -69,7 +69,10 @@ def _player_links(
     )
     return {
         "stream_path": stream_path,
-        "browser_stream_path": stream_path + "&transcode=1",
+        # Keep the compatibility key for existing clients, but serve the
+        # original file directly. Quark's browser transcode endpoint currently
+        # returns plf_invalid and can otherwise delay every native MP4 play.
+        "browser_stream_path": stream_path,
         "stream_url": stream_url,
         "infuse_url": (
             "infuse://x-callback-url/play"
@@ -547,6 +550,7 @@ async def player_links(
     if not Path(name).suffix.lower() in {
         ".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".ts", ".m2ts",
         ".flv", ".wmv", ".mpg", ".mpeg", ".3gp", ".rmvb", ".rm",
+        ".hevc", ".h265",
     }:
         raise HTTPException(400, "not a supported video file")
     return JSONResponse(
@@ -599,10 +603,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
     browser_stream_path = links["browser_stream_path"]
     stream_url = links["stream_url"]
     ext = Path(name).suffix.lower()
-    web_playable = ext in {
-        ".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".ts", ".m2ts",
-        ".flv", ".wmv", ".mpg", ".mpeg", ".3gp", ".rmvb", ".rm",
-    }
+    web_playable = ext in {".mp4", ".webm", ".mov", ".m4v"}
 
     safe_stream_path = html.escape(stream_path, quote=True)
     safe_browser_stream_path = html.escape(browser_stream_path, quote=True)
@@ -617,6 +618,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
 
     size_gb = size / 1024 / 1024 / 1024 if size else 0
     safe_name = html.escape(str(name), quote=True)
+    safe_ext = html.escape(ext, quote=True)
 
     if web_playable:
         video_tag = f'''
@@ -627,9 +629,15 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
     else:
         video_tag = f'''
         <div class="card" style="background:#111;color:#ccc;text-align:center;padding:28px">
-          <p style="font-size:1.1rem;margin:0 0 8px">格式 {ext or "未知"} 网页通常无法完整体验</p>
-          <p class="muted" style="margin:0">请用 VLC / IINA / PotPlayer / nPlayer 打开串流地址（MKV、杜比更完整）</p>
+          <p style="font-size:1.1rem;margin:0 0 8px">{safe_ext or "此"} 格式不交給瀏覽器硬解碼</p>
+          <p class="muted" style="margin:0">請直接按下方 Infuse / VLC / PotPlayer；仍是即時在線串流，不需要先下載影片。</p>
         </div>'''
+
+    playback_note = (
+        "瀏覽器會直接嘗試播放原檔；若是 HEVC／杜比或出現黑畫面、無聲，請改用下方專業播放器。"
+        if web_playable
+        else "MKV／HEVC／杜比等格式由專業播放器在線串流，避免瀏覽器黑畫面或無聲。"
+    )
 
     page_html = f'''<!DOCTYPE html>
 <html lang="zh-Hant">
@@ -666,7 +674,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
 
     <div class="card">
       <h2 style="margin-top:0">{safe_name}</h2>
-      <p class="muted">約 {size_gb:.2f} GB · 無需等搬運完成 · 瀏覽器會優先使用夸克線上轉碼，失敗時可改用下方播放器開啟原畫。</p>
+      <p class="muted">約 {size_gb:.2f} GB · 無需等搬運完成 · {playback_note}</p>
       {video_tag}
     </div>
 

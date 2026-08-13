@@ -23,6 +23,7 @@
     </div>
     <div class="card">
       <h3>檔案</h3>
+      <p class="muted">MP4 等格式可在網頁直接試播；HEVC／MKV／杜比影片請按 Infuse、VLC 或 PotPlayer，都是免下載的在線串流。</p>
       <table>
         <thead>
           <tr><th>路徑</th><th>大小</th><th>下載</th><th>上傳</th><th>狀態</th><th>操作</th></tr>
@@ -83,13 +84,15 @@
       }
       ja.innerHTML = acts;
       const isLocal = dest === 'local';
-      const videoExt = /\.(mp4|mkv|webm|mov|m4v|avi|ts|m2ts|flv|wmv|mpg|mpeg|3gp|rmvb)$/i;
+      const videoExt = /\.(mp4|mkv|webm|mov|m4v|avi|ts|m2ts|flv|wmv|mpg|mpeg|3gp|rmvb|rm|hevc|h265)$/i;
+      const browserNativeExt = /\.(mp4|webm|mov|m4v)$/i;
       document.getElementById('files').innerHTML = (files||[]).map(f => {
         let op = '';
         const name = f.relative_path||f.remote_name||'';
         if (videoExt.test(name)) {
-          op += `<a class="btn" style="margin:2px" href="/play/${jobId}/${f.id}">▶ 網頁播放</a>`;
-          op += `<a class="btn secondary" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/open/infuse">Infuse</a>`;
+          const playLabel = browserNativeExt.test(name) ? '▶ 網頁試播' : '▶ 播放選項';
+          op += `<a class="btn secondary" style="margin:2px" href="/play/${jobId}/${f.id}">${playLabel}</a>`;
+          op += `<a class="btn" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/open/infuse">Infuse</a>`;
           op += `<a class="btn secondary" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/open/vlc">VLC</a>`;
           op += `<a class="btn secondary" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/open/potplayer">PotPlayer</a>`;
         }

@@ -727,6 +727,9 @@ async def test_player_playlist_supports_windows_vlc_potplayer_and_infuse(
     assert "filename=%E9%9B%BB%E5%BD%B1.mkv" in page_html
     assert "v0.4.1 新版" in page_html
     assert page.headers["cache-control"] == "no-store"
+    assert '<video id="v"' not in page_html
+    assert "transcode=1" not in page_html
+    assert "仍是即時在線串流，不需要先下載影片" in page_html
     assert 'src="/static/vendor/hls.light.min.js"' in page_html
     assert "cdn.jsdelivr.net" not in page_html
     hls_path = Path(routes_stream.__file__).parents[2] / "web/static/vendor/hls.light.min.js"
@@ -734,6 +737,31 @@ async def test_player_playlist_supports_windows_vlc_potplayer_and_infuse(
     assert f'integrity="sha384-{digest}"' in page_html
     assert "DOMContentLoaded" in page_html
     assert hls_path.exists()
+
+    mp4_id = await db.create_file(
+        job_id, "HEVC Dolby 電影.mp4", size=456, source_fid="mp4"
+    )
+    mp4_page = await routes_stream.play_page(job_id, mp4_id, Request(scope), None)
+    mp4_html = mp4_page.body.decode("utf-8")
+    assert '<video id="v"' in mp4_html
+    assert "transcode=1" not in mp4_html
+    mp4_links = routes_stream._player_links(
+        Request(scope), job_id, mp4_id, "HEVC Dolby 電影.mp4"
+    )
+    assert mp4_links["browser_stream_path"] == mp4_links["stream_path"]
+
+    hostile_id = await db.create_file(
+        job_id,
+        'movie.<img src=x onerror=alert(1)>',
+        size=789,
+        source_fid="hostile",
+    )
+    hostile_page = await routes_stream.play_page(
+        job_id, hostile_id, Request(scope), None
+    )
+    hostile_html = hostile_page.body.decode("utf-8")
+    assert '<img src=x onerror=alert(1)>' not in hostile_html
+    assert '&lt;img src=x onerror=alert(1)&gt;' in hostile_html
     await db.close()
 
 
