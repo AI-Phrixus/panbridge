@@ -8,7 +8,14 @@ from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 
 from app.api.deps import require_auth
 from app.auth.quark_session import load_quark_source
@@ -44,6 +51,41 @@ def _public_base(request: Request) -> str:
 def _content_disposition(filename: str) -> str:
     safe = quote(filename.replace("\r", "").replace("\n", ""), safe="")
     return f"inline; filename*=UTF-8''{safe}"
+
+
+def _player_links(
+    request: Request, job_id: int, file_id: int, filename: str
+) -> dict[str, str]:
+    """Build one scoped stream URL and platform-specific deep links."""
+    token = make_stream_token(job_id, file_id)
+    stream_path = (
+        f"/api/tasks/{job_id}/files/{file_id}/stream"
+        f"?token={quote(token, safe='')}"
+    )
+    stream_url = _public_base(request) + stream_path
+    encoded_url = quote(stream_url, safe="")
+    encoded_name = quote(
+        str(filename).replace("\r", " ").replace("\n", " "), safe=""
+    )
+    return {
+        "stream_path": stream_path,
+        "browser_stream_path": stream_path + "&transcode=1",
+        "stream_url": stream_url,
+        "infuse_url": (
+            "infuse://x-callback-url/play"
+            f"?url={encoded_url}&filename={encoded_name}"
+        ),
+        "vlc_url": "vlc://" + stream_url,
+        "vlc_ios_url": f"vlc-x-callback://x-callback-url/stream?url={encoded_url}",
+        "vlc_android_url": (
+            "intent:" + stream_url
+            + "#Intent;action=android.intent.action.VIEW;type=video/*;"
+            "package=org.videolan.vlc;end"
+        ),
+        "iina_url": f"iina://weblink?url={encoded_url}",
+        "potplayer_url": "potplayer://" + stream_url,
+        "playlist_path": f"/api/tasks/{job_id}/files/{file_id}/playlist.m3u",
+    }
 
 
 def _parse_range(value: str, size: int) -> tuple[int, int]:
@@ -485,6 +527,64 @@ async def player_playlist(
     )
 
 
+@router.get("/api/tasks/{job_id}/files/{file_id}/player-links")
+async def player_links(
+    job_id: int,
+    file_id: int,
+    request: Request,
+    _: None = Depends(require_auth),
+):
+    """Return signed direct-open links for the current device's player."""
+    job = await db.get_job(job_id)
+    file_row = await db.get_file(file_id)
+    if not job or not file_row or file_row["job_id"] != job_id:
+        raise HTTPException(404, "not found")
+    name = str(
+        file_row.get("remote_name")
+        or file_row.get("relative_path")
+        or "video"
+    )
+    if not Path(name).suffix.lower() in {
+        ".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".ts", ".m2ts",
+        ".flv", ".wmv", ".mpg", ".mpeg", ".3gp", ".rmvb", ".rm",
+    }:
+        raise HTTPException(400, "not a supported video file")
+    return JSONResponse(
+        {**_player_links(request, job_id, file_id, name), "filename": name},
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@router.get("/api/tasks/{job_id}/files/{file_id}/open/{player}")
+async def open_player(
+    job_id: int,
+    file_id: int,
+    player: str,
+    request: Request,
+    _: None = Depends(require_auth),
+):
+    """Keep browser user activation while redirecting into a native player."""
+    job = await db.get_job(job_id)
+    file_row = await db.get_file(file_id)
+    if not job or not file_row or file_row["job_id"] != job_id:
+        raise HTTPException(404, "not found")
+    name = str(file_row.get("remote_name") or "video")
+    links = _player_links(request, job_id, file_id, name)
+    target_key = {
+        "infuse": "infuse_url",
+        "vlc": "vlc_url",
+        "iina": "iina_url",
+        "potplayer": "potplayer_url",
+    }.get(player.lower())
+    if not target_key:
+        raise HTTPException(400, "unsupported player")
+    return RedirectResponse(
+        links[target_key],
+        status_code=302,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/play/{job_id}/{file_id}", response_class=HTMLResponse)
 async def play_page(job_id: int, file_id: int, request: Request, _: None = Depends(require_auth)):
     job = await db.get_job(job_id)
@@ -494,40 +594,26 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
 
     name = f.get("remote_name") or "video"
     size = int(f.get("size") or 0)
-    player_token = make_stream_token(job_id, file_id)
-    stream_path = (
-        f"/api/tasks/{job_id}/files/{file_id}/stream"
-        f"?token={quote(player_token, safe='')}"
-    )
-    browser_stream_path = stream_path + "&transcode=1"
-    base = _public_base(request)
-    stream_url = base + stream_path
+    links = _player_links(request, job_id, file_id, str(name))
+    stream_path = links["stream_path"]
+    browser_stream_path = links["browser_stream_path"]
+    stream_url = links["stream_url"]
     ext = Path(name).suffix.lower()
     web_playable = ext in {
         ".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".ts", ".m2ts",
         ".flv", ".wmv", ".mpg", ".mpeg", ".3gp", ".rmvb", ".rm",
     }
 
-    encoded = quote(stream_url, safe="")
-    vlc_web = "vlc://" + stream_url
-    android_vlc = (
-        "intent:" + stream_url +
-        "#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
-    )
-    ios_vlc = f"vlc-x-callback://x-callback-url/stream?url={encoded}"
-    iina = f"iina://weblink?url={encoded}"
-    pot = "potplayer://" + stream_url
-
     safe_stream_path = html.escape(stream_path, quote=True)
     safe_browser_stream_path = html.escape(browser_stream_path, quote=True)
     safe_stream_url = html.escape(stream_url, quote=True)
-    safe_vlc_web = html.escape(vlc_web, quote=True)
-    safe_android_vlc = html.escape(android_vlc, quote=True)
-    safe_ios_vlc = html.escape(ios_vlc, quote=True)
-    safe_iina = html.escape(iina, quote=True)
-    safe_pot = html.escape(pot, quote=True)
-    playlist_path = f"/api/tasks/{job_id}/files/{file_id}/playlist.m3u"
-    safe_playlist_path = html.escape(playlist_path, quote=True)
+    safe_infuse = html.escape(links["infuse_url"], quote=True)
+    safe_vlc_web = html.escape(links["vlc_url"], quote=True)
+    safe_android_vlc = html.escape(links["vlc_android_url"], quote=True)
+    safe_ios_vlc = html.escape(links["vlc_ios_url"], quote=True)
+    safe_iina = html.escape(links["iina_url"], quote=True)
+    safe_pot = html.escape(links["potplayer_url"], quote=True)
+    safe_playlist_path = html.escape(links["playlist_path"], quote=True)
 
     size_gb = size / 1024 / 1024 / 1024 if size else 0
     safe_name = html.escape(str(name), quote=True)
@@ -551,7 +637,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>播放 · {safe_name}</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=0.4.1" />
   <script async id="hlsLibrary" src="/static/vendor/hls.light.min.js"
     integrity="sha384-R/A0SfcLw9wTUjx6JTLqfFBfDpC0DQOKgiff7C516hTFU9AWjNDazyoPSfFhD3sx"
     crossorigin="anonymous"></script>
@@ -571,7 +657,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
 <body>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span> 播放</div>
+      <div class="logo">Pan<span>Bridge</span> 播放 <small style="font-size:.65rem">v0.4.1 新版</small></div>
       <nav>
         <a href="/tasks/{job_id}">← 返回任务</a>
         <a href="/">任务列表</a>
@@ -585,10 +671,11 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
     </div>
 
     <div class="card">
-      <h3>用专业播放器打开（推荐）</h3>
+      <h3>用專業播放器開啟（推薦）</h3>
       <p class="muted">此為 7 天限時播放器連結，不需要瀏覽器登入 Cookie。若按鈕無反應：複製串流地址 → 打開播放器 →「媒體/打開網路串流」貼上播放。</p>
       <div class="play-actions">
-        <a class="primary" href="{safe_vlc_web}">VLC 打开</a>
+        <a class="primary" href="{safe_infuse}">Infuse（Apple）</a>
+        <a href="{safe_vlc_web}">VLC（Mac / Windows）</a>
         <a href="{safe_iina}">IINA (Mac)</a>
         <a href="{safe_pot}">PotPlayer (Win)</a>
         <a href="{safe_ios_vlc}">VLC (iPhone/iPad)</a>
@@ -605,8 +692,9 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
       <h3>跨平台说明</h3>
       <ul class="muted">
         <li><b>Windows</b>：VLC 可按上方按鈕；PotPlayer 可按專用按鈕；也可下載 .m3u 後雙擊，用 Windows 已設定的播放器開啟。</li>
-        <li><b>Mac</b>：VLC 或 <a href="https://iina.io/" target="_blank">IINA</a> 体验最好。</li>
-        <li><b>iPhone / iPad / Apple TV</b>：VLC 可按專用按鈕；Infuse 付費版請複製串流地址，在 Infuse 的「新增檔案／透過 URL」貼上。</li>
+        <li><b>Mac</b>：可直接按 Infuse、VLC 或 <a href="https://iina.io/" target="_blank">IINA</a>。</li>
+        <li><b>iPhone / iPad</b>：Infuse 付費版可按上方 Infuse 按鈕直開；也可使用 VLC 專用按鈕。</li>
+        <li><b>Apple TV</b>：在 Infuse 新增 PanBridge 的串流地址，或由同一 Apple 帳號裝置接續播放。</li>
         <li><b>Android</b>：装 VLC 后点「VLC (Android)」。</li>
         <li><b>MKV / 杜比</b>：务必用专业播放器，系统自带网页播放器往往不行。</li>
         <li>播放会消耗服务器与源站流量；暂停/拖动取决于源站是否支持 Range。</li>
@@ -626,6 +714,15 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
       try {{
         const probe = await fetch(source, {{method: 'HEAD', cache: 'no-store'}});
         const type = (probe.headers.get('content-type') || '').toLowerCase();
+        if (!probe.ok) {{
+          let detail = '網頁播放暫不可用';
+          try {{
+            const payload = await probe.json();
+            detail = payload.detail || detail;
+          }} catch (_ignored) {{}}
+          if (message) message.textContent = detail;
+          return;
+        }}
         if (type.includes('mpegurl')) {{
           if (video.canPlayType('application/vnd.apple.mpegurl')) {{
             playerStarted = true;
@@ -685,4 +782,4 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
   </script>
 </body>
 </html>'''
-    return HTMLResponse(page_html)
+    return HTMLResponse(page_html, headers={"Cache-Control": "no-store"})

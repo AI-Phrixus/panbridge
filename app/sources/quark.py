@@ -22,8 +22,8 @@ def _dt() -> int:
 # Official-ish PC client UA — CDN returns HTTP 412 with plain Chrome UA
 _QUARK_PC_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) quark-cloud-drive/2.5.56 Chrome/100.0.4896.160 "
-    "Electron/18.3.5.12 Safari/537.36 Channel/pckk_other_ch"
+    "(KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 "
+    "Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch"
 )
 
 
@@ -529,7 +529,9 @@ class QuarkSource:
     async def prepare_stream(self, file: SourceFile) -> dict[str, Any]:
         """Return a Quark-generated browser-friendly video stream when available."""
         fid = file.meta.get("owned_fid") or file.fid
-        params = {"pr": "ucpro", "fr": "pc", "uc_param_str": "", "__dt": _dt(), "__t": _ts13()}
+        # The playback API rejects the otherwise-common empty uc_param_str as
+        # plf_invalid. Match Quark's desktop-client request: only pr + fr.
+        params = {"pr": "ucpro", "fr": "pc"}
         body = {
             "fid": fid,
             "resolutions": "low,normal,high,super,2k,4k",

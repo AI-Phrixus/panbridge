@@ -86,6 +86,35 @@ class OneDriveSink:
         remaining = int(q.get("remaining") or max(0, total - used))
         return {"quota": total, "used": used, "free": remaining}
 
+    async def download_info_for_item(self, item_id: str) -> dict[str, Any]:
+        """Return a fresh, pre-authenticated Graph download URL for an item."""
+        safe_id = quote(str(item_id), safe="")
+        r = await self._request(
+            "GET",
+            f"{GRAPH}/me/drive/items/{safe_id}",
+            params={
+                "$select": "id,name,size,file,@microsoft.graph.downloadUrl"
+            },
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(
+                f"onedrive download link: {r.status_code} {r.text[:200]}"
+            )
+        data = r.json()
+        download_url = str(data.get("@microsoft.graph.downloadUrl") or "")
+        parsed = httpx.URL(download_url)
+        if parsed.scheme != "https" or not parsed.host:
+            raise RuntimeError("OneDrive 未返回安全的下載網址")
+        file_meta = data.get("file") or {}
+        return {
+            "url": download_url,
+            "name": str(data.get("name") or ""),
+            "size": int(data.get("size") or 0),
+            "content_type": str(
+                file_meta.get("mimeType") or "application/octet-stream"
+            ),
+        }
+
     async def ensure_folder_path(self, path: str) -> str:
         """Create nested folders under root; return item id of final folder."""
         path = path.strip("/")

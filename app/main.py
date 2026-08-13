@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 
-app = FastAPI(title="PanBridge", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="PanBridge", version="0.4.1", lifespan=lifespan)
 app.state.worker = worker
 app.include_router(auth_router)
 app.include_router(tasks_router)
@@ -63,28 +63,38 @@ def _logged_in(request: Request) -> bool:
 async def index(request: Request):
     if not _logged_in(request):
         return RedirectResponse("/login", status_code=302)
-    return templates.TemplateResponse("index.html", {"request": request})
+    response = templates.TemplateResponse("index.html", {"request": request})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     if _logged_in(request):
         return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request})
+    response = templates.TemplateResponse("login.html", {"request": request})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     if not _logged_in(request):
         return RedirectResponse("/login", status_code=302)
-    return templates.TemplateResponse("settings.html", {"request": request})
+    response = templates.TemplateResponse("settings.html", {"request": request})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/tasks/{job_id}", response_class=HTMLResponse)
 async def task_page(request: Request, job_id: int):
     if not _logged_in(request):
         return RedirectResponse("/login", status_code=302)
-    return templates.TemplateResponse("task.html", {"request": request, "job_id": job_id})
+    response = templates.TemplateResponse(
+        "task.html", {"request": request, "job_id": job_id}
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/api/health")

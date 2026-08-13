@@ -723,6 +723,10 @@ async def test_player_playlist_supports_windows_vlc_potplayer_and_infuse(
     assert "PotPlayer (Win)" in page_html
     assert "Windows / VLC" in page_html
     assert "Infuse 付費版" in page_html
+    assert 'href="infuse://x-callback-url/play?' in page_html
+    assert "filename=%E9%9B%BB%E5%BD%B1.mkv" in page_html
+    assert "v0.4.1 新版" in page_html
+    assert page.headers["cache-control"] == "no-store"
     assert 'src="/static/vendor/hls.light.min.js"' in page_html
     assert "cdn.jsdelivr.net" not in page_html
     hls_path = Path(routes_stream.__file__).parents[2] / "web/static/vendor/hls.light.min.js"
@@ -996,6 +1000,10 @@ async def test_quark_transcode_prefers_api_default_resolution(monkeypatch: pytes
     source = QuarkSource("base=1")
 
     async def fake_request(client, method, url, **kwargs):
+        assert url == "https://drive.quark.cn/1/clouddrive/file/v2/play/project"
+        assert kwargs["params"] == {"pr": "ucpro", "fr": "pc"}
+        assert "quark-cloud-drive/2.5.20" in kwargs["headers"]["user-agent"]
+        assert "uc_param_str" not in kwargs["params"]
         return httpx.Response(
             200,
             json={
@@ -1015,6 +1023,150 @@ async def test_quark_transcode_prefers_api_default_resolution(monkeypatch: pytes
     result = await source.prepare_stream(SourceFile(fid="f1", name="movie.mkv", size=100))
     assert result["url"] == "https://v/high"
     assert result["content_type"] == "video/mp4"
+
+
+@pytest.mark.asyncio
+async def test_completed_onedrive_file_is_primary_external_player_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    db = Database(tmp_path / "onedrive-stream.db")
+    await db.connect()
+    job_id = await db.create_job(
+        "quark", "https://pan.quark.cn/s/x", destination="onedrive"
+    )
+    file_id = await db.create_file(
+        job_id, "電影.mkv", size=123, source_fid="source-fid"
+    )
+    await db.update_file(file_id, status="done", pcloud_fileid="od-item-1")
+
+    class FakeSink:
+        async def download_info_for_item(self, item_id):
+            assert item_id == "od-item-1"
+            return {
+                "url": "https://public.dm.files.1drv.com/temporary",
+                "name": "電影.mkv",
+                "size": 123,
+                "content_type": "video/x-matroska",
+            }
+
+    async def fake_sink(_db):
+        assert _db is db
+        return FakeSink()
+
+    monkeypatch.setattr("app.stream.resolve.make_onedrive_sink", fake_sink)
+    stream = await resolve_stream(db, job_id, file_id)
+    assert stream.kind == "onedrive"
+    assert stream.url.startswith("https://public.dm.files.1drv.com/")
+    assert stream.headers == {}
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_onedrive_native_video_survives_expired_source_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    db = Database(tmp_path / "onedrive-browser.db")
+    await db.connect()
+    job_id = await db.create_job(
+        "quark", "https://pan.quark.cn/s/x", destination="onedrive"
+    )
+    file_id = await db.create_file(
+        job_id, "電影.mp4", size=123, source_fid="source-fid"
+    )
+    await db.update_file(file_id, status="done", pcloud_fileid="od-native")
+
+    class FakeSink:
+        async def download_info_for_item(self, item_id):
+            assert item_id == "od-native"
+            return {
+                "url": "https://public.dm.files.1drv.com/native",
+                "name": "電影.mp4",
+                "size": 123,
+                "content_type": "video/mp4",
+            }
+
+    async def fake_sink(_db):
+        return FakeSink()
+
+    async def expired_quark(_db):  # pragma: no cover
+        raise AssertionError("completed browser-native video must not require Quark")
+
+    monkeypatch.setattr("app.stream.resolve.make_onedrive_sink", fake_sink)
+    monkeypatch.setattr("app.stream.resolve.load_quark_source", expired_quark)
+    stream = await resolve_stream(db, job_id, file_id, prefer_transcode=True)
+    assert stream.kind == "onedrive"
+    assert stream.content_type == "video/mp4"
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_mkv_transcode_failure_is_visible_not_silent_original_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    db = Database(tmp_path / "browser-transcode.db")
+    await db.connect()
+    job_id = await db.create_job("quark", "https://pan.quark.cn/s/x")
+    file_id = await db.create_file(job_id, "movie.mkv", size=123, source_fid="f")
+
+    class FakeSource:
+        async def prepare_stream(self, _file):
+            raise RuntimeError("plf_invalid")
+
+        async def prepare_download(self, *_args):  # pragma: no cover
+            raise AssertionError("browser must not silently receive an MKV")
+
+    async def fake_source(_db):
+        return FakeSource()
+
+    monkeypatch.setattr("app.stream.resolve.load_quark_source", fake_source)
+    with pytest.raises(RuntimeError, match="Infuse.*VLC.*PotPlayer"):
+        await resolve_stream(db, job_id, file_id, prefer_transcode=True)
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_player_links_and_task_ui_offer_direct_infuse_and_windows_buttons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    db = Database(tmp_path / "player-links.db")
+    await db.connect()
+    job_id = await db.create_job("quark", "https://pan.quark.cn/s/x")
+    file_id = await db.create_file(job_id, "測試 電影.mkv", size=123, source_fid="f")
+    monkeypatch.setattr(routes_stream, "db", db)
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": f"/api/tasks/{job_id}/files/{file_id}/player-links",
+        "raw_path": b"/player-links",
+        "query_string": b"",
+        "headers": [(b"host", b"panbridge.example.test")],
+        "client": ("127.0.0.1", 1),
+        "server": ("panbridge.example.test", 443),
+    }
+    request = Request(scope)
+    links_response = await routes_stream.player_links(job_id, file_id, request, None)
+    assert links_response.headers["cache-control"] == "private, no-store"
+    links = json.loads(links_response.body)
+    assert links["infuse_url"].startswith("infuse://x-callback-url/play?url=")
+    assert "filename=%E6%B8%AC%E8%A9%A6%20%E9%9B%BB%E5%BD%B1.mkv" in links["infuse_url"]
+    stream_token = parse_qs(urlsplit(links["stream_url"]).query)["token"][0]
+    assert verify_stream_token(stream_token, job_id, file_id)
+    redirect = await routes_stream.open_player(
+        job_id, file_id, "infuse", request, None
+    )
+    assert redirect.status_code == 302
+    assert redirect.headers["location"].startswith("infuse://x-callback-url/play?")
+
+    task_html = (
+        Path(routes_stream.__file__).parents[2] / "web/templates/task.html"
+    ).read_text()
+    assert "/open/infuse" in task_html
+    assert "/open/vlc" in task_html
+    assert "/open/potplayer" in task_html
+    assert "v0.4.1 新版播放器" in task_html
+    await db.close()
 
 
 @pytest.mark.asyncio

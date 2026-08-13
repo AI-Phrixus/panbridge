@@ -8,6 +8,7 @@ from typing import Any
 from app.config import get_settings
 from app.db import Database
 from app.auth.quark_session import load_quark_source
+from app.auth.onedrive_session import make_onedrive_sink
 from app.security import decrypt_json
 from app.sources.baidu import BaiduSource
 from app.sources.quark import QuarkAuthenticationError
@@ -18,6 +19,8 @@ VIDEO_EXT = {
     ".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".ts", ".m2ts",
     ".flv", ".wmv", ".mpg", ".mpeg", ".3gp", ".rmvb", ".rm",
 }
+
+BROWSER_NATIVE_EXT = {".mp4", ".webm", ".mov", ".m4v"}
 
 
 @dataclass
@@ -66,6 +69,25 @@ async def resolve_stream(
         ".ts": "video/mp2t",
     }.get(suffix, "application/octet-stream")
 
+    async def completed_onedrive() -> StreamSource | None:
+        item_id = str(f.get("pcloud_fileid") or "")
+        if (
+            f.get("status") != "done"
+            or str(job.get("destination") or "").lower() != "onedrive"
+            or not item_id
+        ):
+            return None
+        sink = await make_onedrive_sink(db)
+        info = await sink.download_info_for_item(item_id)
+        return StreamSource(
+            kind="onedrive",
+            url=str(info["url"]),
+            headers={},
+            filename=str(info.get("name") or name),
+            size=int(info.get("size") or size),
+            content_type=str(info.get("content_type") or ctype),
+        )
+
     # 1) Local delivered / partial complete file
     candidates: list[Path] = []
     if f.get("pcloud_fileid") and str(f["pcloud_fileid"]).startswith("/"):
@@ -93,9 +115,42 @@ async def resolve_stream(
                 content_type=ctype,
             )
 
+    # External players should use the completed OneDrive copy. It is fresh,
+    # supports Range, and remains available if the original netdisk login or
+    # temporary download URL expires.
+    if not prefer_transcode:
+        try:
+            onedrive = await completed_onedrive()
+            if onedrive:
+                return onedrive
+        except Exception:
+            # A temporary Graph error must not make the source copy unplayable.
+            pass
+
+    # MP4/WebM/MOV/M4V need no cloud transcoding. Prefer the completed copy in
+    # browsers too, so playback survives an expired Quark/Baidu login.
+    if prefer_transcode and suffix in BROWSER_NATIVE_EXT:
+        try:
+            onedrive = await completed_onedrive()
+            if onedrive:
+                return onedrive
+        except Exception:
+            pass
+
     # 2) Source netdisk direct stream (no need to fully download first)
     source_type = job["source_type"]
     if source_type == "baidu":
+        if prefer_transcode and suffix not in BROWSER_NATIVE_EXT:
+            raise RuntimeError(
+                "此影片格式無法直接在網頁解碼，請按 Infuse、VLC 或 PotPlayer 播放"
+            )
+        if prefer_transcode:
+            try:
+                onedrive = await completed_onedrive()
+                if onedrive:
+                    return onedrive
+            except Exception:
+                pass
         enc = await db.get_credential("baidu")
         if not enc:
             raise RuntimeError("百度未登录")
@@ -137,10 +192,19 @@ async def resolve_stream(
                 )
             except QuarkAuthenticationError:
                 raise
-            except Exception:
+            except Exception as error:
                 # Transcoding is account/file dependent. Original-file proxy is
                 # still a valid fallback for native browser formats and players.
-                pass
+                if suffix not in BROWSER_NATIVE_EXT:
+                    raise RuntimeError(
+                        f"夸克網頁轉碼暫不可用（{error}）；請按 Infuse、VLC 或 PotPlayer 播放原畫"
+                    ) from error
+                try:
+                    onedrive = await completed_onedrive()
+                    if onedrive:
+                        return onedrive
+                except Exception:
+                    pass
         url = await src.prepare_download(sf, {})
         return StreamSource(
             kind="quark",

@@ -4,12 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>任務 · PanBridge</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=0.4.1" />
 </head>
 <body>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span></div>
+      <div class="logo">Pan<span>Bridge</span> <small style="font-size:.65rem">v0.4.1 新版播放器</small></div>
       <nav>
         <a href="/">← 任務列表</a>
         <a href="/settings">帳號設定</a>
@@ -88,7 +88,10 @@
         let op = '';
         const name = f.relative_path||f.remote_name||'';
         if (videoExt.test(name)) {
-          op += `<a class="btn" style="margin:2px" href="/play/${jobId}/${f.id}">▶ 播放</a>`;
+          op += `<a class="btn" style="margin:2px" href="/play/${jobId}/${f.id}">▶ 網頁播放</a>`;
+          op += `<a class="btn secondary" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/open/infuse">Infuse</a>`;
+          op += `<a class="btn secondary" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/open/vlc">VLC</a>`;
+          op += `<a class="btn secondary" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/open/potplayer">PotPlayer</a>`;
         }
         if (f.status === 'done') {
           op += `<button type="button" class="secondary" style="margin:2px" onclick="openLocation(${jobId},${f.id})">在雲端顯示</button>`;
