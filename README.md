@@ -7,7 +7,7 @@
 
 | | |
 |--|--|
-| **版本** | v0.4.3 |
+| **版本** | v0.4.4 |
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
 | **核心能力** | 貼連結即跑 · 斷點續傳 · 大檔 OneDrive · 串流播放 |
@@ -163,6 +163,11 @@ Dockerfile     容器
 ---
 
 ## Changelog（摘要）
+
+### v0.4.4
+- 正式入口改為 Cloudflare Tunnel 公信 HTTPS；舊 Oracle HTTP 入口自動 308 跳轉到固定 HTTPS
+- 播放器、`.m3u` 與未完成檔的簽名串流統一使用 `PUBLIC_BASE_URL`，避免 Infuse／VLC／Windows 應用攔截明文 HTTP
+- HTTPS 回應加入 HSTS；本機健康檢查維持可用，避免代理迴圈
 
 ### v0.4.3
 - OneDrive 完成回應與 Worker 雙重核對遠端大小；任何多一段、少一段或缺少 metadata 的上傳都不再標記完成

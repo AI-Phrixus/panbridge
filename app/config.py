@@ -2,12 +2,41 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _DEFAULT_SECRET = "dev-secret-change-me-please-32chars"
 _DEFAULT_PASSWORD = "admin"
+
+
+def normalize_public_base_url(value: str) -> str:
+    """Return a safe canonical HTTPS origin, or an empty string if invalid."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if any(ord(char) <= 0x20 or ord(char) == 0x7F for char in raw):
+        return ""
+    if "\\" in raw or "%" in raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        _ = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+        or parsed.netloc.endswith(":")
+    ):
+        return ""
+    return raw.rstrip("/")
 
 
 class Settings(BaseSettings):
@@ -34,7 +63,7 @@ class Settings(BaseSettings):
     stream_token_max_age: int = 60 * 60 * 24 * 7
     # Optional canonical external URL, e.g. https://panbridge.example.com.
     public_base_url: str = ""
-    app_version: str = "0.4.3"
+    app_version: str = "0.4.4"
 
     @property
     def data_path(self) -> Path:
@@ -81,6 +110,13 @@ def validate_runtime_security(settings: Settings) -> None:
             missing.append("ADMIN_PASSWORD（至少 10 字元強密碼）")
         raise RuntimeError(
             "安全設定未完成，服務拒絕啟動：請在 .env 設定 " + "、".join(missing)
+        )
+    if settings.public_base_url.strip() and not normalize_public_base_url(
+        settings.public_base_url
+    ):
+        raise RuntimeError(
+            "PUBLIC_BASE_URL 必須是純 HTTPS 網站根網址，例如 "
+            "https://panbridge.example.com（不可包含帳密、路徑、查詢或片段）"
         )
 
 

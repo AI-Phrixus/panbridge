@@ -7,13 +7,15 @@ sudo systemctl status panbridge
 sudo systemctl restart panbridge
 sudo journalctl -u panbridge -n 100 --no-pager
 sudo journalctl -u panbridge -f
+sudo systemctl status cloudflared
 ```
 
 ## 健康與版本
 
 ```bash
 curl -s http://127.0.0.1:8080/api/health
-# {"ok":true,"version":"0.4.3"}
+# {"ok":true,"version":"0.4.4"}
+curl -s https://panbridge.tdtc.indevs.in/api/health
 ```
 
 ## 任務

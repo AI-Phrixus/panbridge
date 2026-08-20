@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import httpx
@@ -13,8 +14,10 @@ import pytest
 from fastapi import HTTPException
 from packaging.version import Version
 from starlette.requests import Request
+from starlette.responses import Response
 
 from app.api import routes_stream
+from app.api import routes_auth
 from app.api.routes_stream import (
     _parse_range,
     _rewrite_hls_manifest,
@@ -51,7 +54,9 @@ from app.transfer.downloader import (
 )
 from app.workers.runner import Worker
 from app.config import Settings
+from app.config import normalize_public_base_url
 from app.config import validate_runtime_security
+from app import main as main_module
 
 
 class RangeTransport(httpx.AsyncBaseTransport):
@@ -92,7 +97,89 @@ class RangeTransport(httpx.AsyncBaseTransport):
 
 
 def test_fix_release_version():
-    assert Version(Settings().app_version) >= Version("0.4.0")
+    assert Version(Settings().app_version) >= Version("0.4.4")
+
+
+def _request_scope(*, scheme: str, client: str, path: str = "/", query: bytes = b""):
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": scheme,
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": query,
+            "headers": [(b"host", b"152.70.86.29:8080")],
+            "client": (client, 12345),
+            "server": ("152.70.86.29", 8080),
+        }
+    )
+
+
+def test_canonical_https_redirect_preserves_path_and_query(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: SimpleNamespace(public_base_url="https://panbridge.example.test/"),
+    )
+    request = _request_scope(
+        scheme="http",
+        client="203.0.113.9",
+        path="/api/tasks/2/files/6/stream",
+        query=b"token=signed%2Fvalue",
+    )
+    assert main_module._canonical_https_target(request) == (
+        "https://panbridge.example.test/api/tasks/2/files/6/stream"
+        "?token=signed%2Fvalue"
+    )
+
+
+def test_canonical_https_redirect_skips_tls_and_loopback(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: SimpleNamespace(public_base_url="https://panbridge.example.test"),
+    )
+    assert main_module._canonical_https_target(
+        _request_scope(scheme="https", client="203.0.113.9")
+    ) is None
+    assert main_module._canonical_https_target(
+        _request_scope(scheme="http", client="127.0.0.1", path="/api/health")
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_canonical_https_middleware_redirect_and_hsts(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: SimpleNamespace(public_base_url="https://panbridge.example.test"),
+    )
+    called = False
+
+    async def call_next(_request: Request) -> Response:
+        nonlocal called
+        called = True
+        return Response("ok")
+
+    redirect = await main_module.canonical_https(
+        _request_scope(scheme="http", client="203.0.113.9", path="/login"),
+        call_next,
+    )
+    assert redirect.status_code == 308
+    assert redirect.headers["location"] == "https://panbridge.example.test/login"
+    assert redirect.headers["cache-control"] == "no-store"
+    assert not called
+
+    secure = await main_module.canonical_https(
+        _request_scope(scheme="https", client="203.0.113.9", path="/login"),
+        call_next,
+    )
+    assert called
+    assert secure.headers["strict-transport-security"] == (
+        "max-age=31536000; includeSubDomains"
+    )
 
 
 def test_public_default_credentials_fail_closed_at_startup():
@@ -103,6 +190,49 @@ def test_public_default_credentials_fail_closed_at_startup():
             panbridge_secret="s" * 48,
             admin_password="a-strong-password",
         )
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://panbridge.example.test",
+        "https://user@panbridge.example.test",
+        "https://panbridge.example.test/path",
+        "https://panbridge.example.test?query=1",
+        "https://panbridge.example.test#fragment",
+        "https://panbridge.example.test:",
+        "https://exa\nmple.example.test",
+        "https://exa\x00mple.example.test",
+        "https://exa mple.example.test",
+        "https://exa%2emple.example.test",
+        "https://exa\\mple.example.test",
+    ],
+)
+def test_public_base_url_rejects_non_origin_values(value: str):
+    assert normalize_public_base_url(value) == ""
+    with pytest.raises(RuntimeError, match="PUBLIC_BASE_URL"):
+        validate_runtime_security(
+            Settings(
+                panbridge_secret="s" * 48,
+                admin_password="a-strong-password",
+                public_base_url=value,
+            )
+        )
+
+
+def test_public_base_url_normalizes_https_origin():
+    assert normalize_public_base_url(" https://panbridge.example.test/ ") == (
+        "https://panbridge.example.test"
+    )
+
+
+def test_secure_cookie_scheme_ignores_untrusted_raw_forwarded_header():
+    request = _request_scope(scheme="http", client="203.0.113.9")
+    request.scope["headers"].append((b"x-forwarded-proto", b"https"))
+    assert not routes_auth._is_secure_request(request)
+    assert routes_auth._is_secure_request(
+        _request_scope(scheme="https", client="203.0.113.9")
     )
 
 
@@ -771,7 +901,7 @@ async def test_player_playlist_supports_windows_vlc_potplayer_and_infuse(
     assert "Windows / VLC" in page_html
     assert "Infuse 付費版" in page_html
     assert f'href="/api/tasks/{job_id}/files/{file_id}/open/infuse"' in page_html
-    assert "v0.4.3 · OneDrive 直連" in page_html
+    assert "v0.4.4 · HTTPS / OneDrive 直連" in page_html
     assert page.headers["cache-control"] == "no-store"
     assert '<video id="v"' not in page_html
     assert "transcode=1" not in page_html
@@ -1565,7 +1695,7 @@ async def test_player_links_and_task_ui_offer_direct_infuse_and_windows_buttons(
     assert "/open/infuse" in task_html
     assert "/open/vlc" in task_html
     assert "/open/potplayer" in task_html
-    assert "v0.4.3 · OneDrive 直連" in task_html
+    assert "v0.4.4 · HTTPS / OneDrive 直連" in task_html
     await db.close()
 
 

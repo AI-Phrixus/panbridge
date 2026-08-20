@@ -14,7 +14,7 @@ from app.api.routes_auth import router as auth_router
 from app.api.routes_tasks import router as tasks_router
 from app.api.routes_stream import router as stream_router
 from app.api.routes_location import router as location_router
-from app.config import get_settings, validate_runtime_security
+from app.config import get_settings, normalize_public_base_url, validate_runtime_security
 from app.db import db
 from app.security import verify_session_token
 from app.workers.runner import Worker
@@ -43,8 +43,50 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 
-app = FastAPI(title="PanBridge", version="0.4.3", lifespan=lifespan)
+app = FastAPI(title="PanBridge", version="0.4.4", lifespan=lifespan)
 app.state.worker = worker
+
+
+def _canonical_https_target(request: Request) -> str | None:
+    """Return the configured HTTPS URL for an external plain-HTTP request.
+
+    Cloudflare Tunnel terminates TLS and Uvicorn restores ``request.url.scheme``
+    from the trusted proxy headers.  Direct legacy access to the Oracle IP stays
+    ``http`` and is redirected.  Loopback health checks remain available even
+    when the public site is HTTPS-only.
+    """
+    configured = normalize_public_base_url(get_settings().public_base_url)
+    if not configured:
+        return None
+    if request.url.scheme == "https":
+        return None
+    client_host = (request.client.host if request.client else "").strip("[]").lower()
+    if client_host in {"127.0.0.1", "::1", "localhost"}:
+        return None
+    target = configured + (request.url.path or "/")
+    if request.url.query:
+        target += "?" + request.url.query
+    return target
+
+
+@app.middleware("http")
+async def canonical_https(request: Request, call_next):
+    target = _canonical_https_target(request)
+    if target:
+        return RedirectResponse(
+            target,
+            status_code=308,
+            headers={"Cache-Control": "no-store"},
+        )
+    response = await call_next(request)
+    if request.url.scheme == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains",
+        )
+    return response
+
+
 app.include_router(auth_router)
 app.include_router(tasks_router)
 app.include_router(stream_router)

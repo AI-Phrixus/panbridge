@@ -69,6 +69,11 @@ class PCloudTokenIn(BaseModel):
     api_host: str | None = None
 
 
+def _is_secure_request(request: Request) -> bool:
+    """Use only the scheme Uvicorn accepted from its trusted proxy boundary."""
+    return request.url.scheme.lower() == "https"
+
+
 @router.post("/login")
 async def login(body: PasswordIn, request: Request, response: Response):
     ip = request.client.host if request.client else "unknown"
@@ -76,14 +81,13 @@ async def login(body: PasswordIn, request: Request, response: Response):
     if not check_password(body.password):
         raise HTTPException(status_code=401, detail="wrong password")
     token = make_session_token()
-    # Secure cookie when behind TLS reverse proxy
-    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").lower()
+    # Uvicorn accepts forwarded scheme only from its configured trusted proxy.
     response.set_cookie(
         "panbridge_session",
         token,
         httponly=True,
         samesite="lax",
-        secure=(proto == "https"),
+        secure=_is_secure_request(request),
         max_age=get_settings().session_max_age,
     )
     return {"ok": True}

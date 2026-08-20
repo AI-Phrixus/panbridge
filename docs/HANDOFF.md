@@ -1,8 +1,8 @@
 # PanBridge 交接手冊（新帳號接手必讀）
 
-> 倉庫版本：**v0.4.3**（實際部署以 `/api/health` 為準）
+> 倉庫版本：**v0.4.4**（實際部署以 `/api/health` 為準）
 >
-> 最後更新：2026-08-13
+> 最後更新：2026-08-20
 > 目的：讓**全新 GitHub / 開發環境**在不依賴舊對話上下文的情況下，能接手運維與開發。
 
 ---
@@ -33,9 +33,10 @@
 | 資料目錄 | `/home/ubuntu/panbridge/data`（DB + 暫存，**勿當 git 倉庫**） |
 | 虛擬環境 | `/home/ubuntu/panbridge/.venv` |
 | 服務 | `systemd` unit：`panbridge` |
+| HTTPS | `cloudflared` named tunnel：`panbridge-oracle-osaka` |
 | 埠 | `8080` |
-| 健康檢查 | `http://152.70.86.29:8080/api/health` 或 `/health` |
-| UI | `http://152.70.86.29:8080` |
+| 健康檢查 | `https://panbridge.tdtc.indevs.in/api/health` 或 `/health` |
+| UI | `https://panbridge.tdtc.indevs.in`（Cloudflare Tunnel） |
 
 ### 服務指令
 
@@ -45,9 +46,11 @@ ssh ubuntu@152.70.86.29
 sudo systemctl status panbridge
 sudo systemctl restart panbridge   # 會中斷當前下載，但會從 .part 續傳
 sudo journalctl -u panbridge -f
+sudo systemctl status cloudflared
 
 # 版本
 curl -s http://127.0.0.1:8080/api/health
+curl -s https://panbridge.tdtc.indevs.in/api/health
 ```
 
 ### systemd 單元（摘要）
