@@ -2,7 +2,7 @@
 
 > 無密鑰。具體口令／secret 只在 VPS `.env`，不上 GitHub。
 > **最後核對**：2026-08-26（Asia/Tokyo）
-> 生產仍是 **v0.4.4**；倉庫工作樹的 **v0.4.5 尚未部署**。實際版本永遠以 `/api/health` 為準。
+> GitHub `main` 與 Oracle 生產均為 **v0.4.5**；實際版本永遠以 `/api/health` 為準。
 
 ---
 
@@ -12,8 +12,8 @@
 |----|-----------------|
 | `panbridge` | `active` · `NRestarts=0` |
 | `cloudflared` | `active` · `NRestarts=0` |
-| 公開健康檢查 | `https://panbridge.tdtc.indevs.in/api/health` → `0.4.4` |
-| 本機健康檢查 | `127.0.0.1:8080/api/health` → `0.4.4` |
+| 公開健康檢查 | `https://panbridge.tdtc.indevs.in/api/health` → `0.4.5` |
+| 本機健康檢查 | `127.0.0.1:8080/api/health` → `0.4.5` |
 | 部署形態 | Oracle Cloud VPS · Ubuntu · systemd + uvicorn + Cloudflare Tunnel |
 | 磁碟 | 約 50.9 GB · 已用 6.7 GB · 可用 44.2 GB |
 | 正式入口 | `https://panbridge.tdtc.indevs.in` |
@@ -30,15 +30,15 @@
 | #4 | quark → OneDrive | `done` | 1452 檔 · 83.75 GB | 全部完成 |
 | #5 | quark → OneDrive | `done` | 13 檔 · 42.90 GB | 全部完成 |
 | #6 | quark → pCloud | `done` | 806 檔 · 1.48 GB | 全部完成 |
-| **#7** | quark → OneDrive | **`failed`** | 680/745 完成 · 97.31% | 65 個來源名稱含 OneDrive 禁用字元；等 v0.4.5 部署後重試 |
+| **#7** | quark → OneDrive | **`done`** | 745/745 完成 · 2.39 GB | v0.4.5 安全改名並修復原 65 個失敗檔 |
 
-Job #7 的 65 個未完成名稱已用 v0.4.5 規則做只讀驗證：65 個都會安全改名，規則處理後非法字元 0、OneDrive 等價名稱碰撞 0、超長路徑 0。部署前不要反覆重試；v0.4.4 只會再次收到 Microsoft 400。
+Job #7 已在 v0.4.5 部署後只重試原 65 個失敗檔。程式直接復用 Oracle 上 65/65 大小精確的暫存（合計 214,436,206 bytes），沒有重新向夸克下載；最終 745/745 `done`、完整性錯誤 0。
 
-65 個失敗檔的本機暫存全部仍在 Oracle，65/65 大小與資料庫完全一致（合計 214,436,206 bytes）。因此修復重試可直接上傳 OneDrive，不需要重新從夸克下載，也不依賴當時的夸克直鏈仍有效。
+65 個新上傳項目全部保存 Microsoft 實際名稱、Drive ID、item ID 與路徑，資料庫不一致 0、非法實際名稱 0；成功後 Oracle 暫存殘留 0。另抽查最小／中間／最大三個新項目，Graph 名稱、Drive、大小與 Range `206` 均一致。
 
 ---
 
-## v0.4.5 待發布修復
+## v0.4.5 已發布修復
 
 - OneDrive 禁用字元、控制字元、保留名稱、尾端空白／句點及超長路徑會自動安全改名。
 - 原始名稱仍留在 PanBridge；OneDrive 實際採用的名稱與資料夾路徑另行保存。
@@ -51,12 +51,18 @@ Job #7 的 65 個未完成名稱已用 v0.4.5 規則做只讀驗證：65 個都�
 
 ## 發布驗收門檻
 
-1. 本機完整測試、編譯與 diff 檢查全部通過。
-2. 紅軍確認無覆蓋／假完成／資料遺失 blocker，藍軍給出 GO。（2026-08-26 已完成：RED GO / BLUE GO）
-3. 獲得操作者推送與部署許可後，先備份程式與 SQLite，再更新服務。
-4. 公開與本機健康檢查都回報 `0.4.5`，HTTPS、Range、播放頁 smoke 不退化。
-5. 僅重試 Job #7 的 65 個失敗檔，抽查 Microsoft 回傳名稱、遠端大小、item ID 與 PanBridge 記錄一致。
-6. Job #7 最終必須是 745/745 `done`；若仍有失敗，保留暫存與錯誤證據，不宣稱完成。
+1. 本機 146 tests、v0.4.5 專項、編譯、diff check 與 10 萬隨機名稱檢查全部通過。
+2. 紅軍與藍軍均給出 GO，無覆蓋／假完成／資料遺失 blocker。
+3. GitHub `main` 已快進推送；Oracle 更新前已備份程式、`.env` 與 SQLite。
+4. 公開與本機健康檢查均回報 `0.4.5`；HTTPS、HSTS、舊 HTTP 308、Secure Cookie、播放器按鈕與 `.m3u` 通過。
+5. 1.1 MB 與 26.66 GB 既有影片均以 Microsoft HTTPS 直連回應 Range `206`；未經 Oracle 傳影片內容。
+6. Job #7 原 65 個失敗檔均成功，最終 745/745 `done`；部署後日誌為 0 warning、0 error、0 `invalidRequest`、0 登入失效。
+
+### 回復點
+
+- 發布提交：`4ceddd98d3860563a02b6dc9261546e6a3dcaae1`
+- 發布前備份：`/home/ubuntu/panbridge-backups/20260826T075750Z`
+- 備份包含舊程式、權限設為 600 的 `.env` 副本，以及 SQLite 一致性備份。
 
 ---
 
@@ -75,4 +81,4 @@ Job #7 的 65 個未完成名稱已用 v0.4.5 規則做只讀驗證：65 個都�
 |------|------|
 | 2026-07-24 | 初版；v0.3.x 大檔續傳與排隊優化期間快照 |
 | 2026-08-20 | v0.4.4 正式 HTTPS、OneDrive 完成檔直連與播放驗收 |
-| 2026-08-26 | Jobs #2/#4/#5/#6 均已完成；定位 Job #7 的 65 個 OneDrive 非法名稱並完成 v0.4.5 本機修復 |
+| 2026-08-26 | v0.4.5 推送、備份、部署與線上播放驗收完成；Job #7 原 65 個失敗檔修復，最終 745/745 `done` |

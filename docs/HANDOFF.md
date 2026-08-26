@@ -96,11 +96,11 @@ sudo cat /home/ubuntu/panbridge/.env
 |-----|------|------|
 | #1/#2/#4/#5 | `done` | OneDrive 目標均已完成；#4 共 1452 檔 |
 | #6 | `done` | pCloud 806 檔完成 |
-| **#7** | **`failed` 97.31%** | 680/745 完成；65 個 OneDrive 非法來源名稱等 v0.4.5 部署後重試 |
+| **#7** | **`done` 100%** | 745/745 完成；v0.4.5 已修復原 65 個 OneDrive 非法來源名稱 |
 
-生產於 2026-08-26 仍是 v0.4.4。v0.4.5 本機修復會安全改名、阻止大小寫／Unicode 同名覆蓋，並保存 Microsoft 實際採用的名稱；部署完成前不要反覆重試 Job #7。
+生產與 GitHub `main` 於 2026-08-26 均已更新為 v0.4.5。發布前先建立 `/home/ubuntu/panbridge-backups/20260826T075750Z` 回復點，之後公開／本機 health、HTTPS、Range、播放器 smoke 與 Job #7 修復重試全部通過。
 
-Job #7 的 65 個失敗檔暫存均仍存在，65/65 大小精確（合計 214,436,206 bytes）；修復後可直接重新上傳，不必重下夸克來源。
+Job #7 的 65 個失敗檔直接復用原暫存上傳，沒有重下夸克來源。65 個 Microsoft 實際名稱／Drive／item ID／大小與資料庫均一致，成功後暫存已清理；最終 745/745 `done`。
 
 ```bash
 python3 - <<'PY'
@@ -178,19 +178,24 @@ pytest -q
 在**有 SSH 權限**的機器上：
 
 ```bash
-# 本機
-rsync -avz --exclude '.venv' --exclude 'data' --exclude '.env' --exclude '__pycache__' \
+# 本機；現有目錄由 root 擁有，因此讓遠端 rsync 使用 sudo，並保留原權限／owner。
+rsync -rz --no-perms --no-owner --no-group --omit-dir-times \
+  --rsync-path='sudo rsync' \
+  --exclude '.venv' --exclude 'data' --exclude '.env' \
+  --exclude '.git' --exclude '__pycache__' --exclude '.pytest_cache' \
   ./ ubuntu@152.70.86.29:/home/ubuntu/panbridge/
 
 ssh ubuntu@152.70.86.29 '
   cd /home/ubuntu/panbridge
   .venv/bin/pip install -r requirements.txt
+  PYTHONPYCACHEPREFIX=/tmp/panbridge-release-check \
+    .venv/bin/python -m compileall -q app
   sudo systemctl restart panbridge
-  curl -s http://127.0.0.1:8080/api/health
+  curl -fsS http://127.0.0.1:8080/api/health
 '
 ```
 
-或用 `scp` 單檔覆蓋後 `systemctl restart panbridge`。
+更新前必須先用 SQLite `backup()` 建一致性 DB 備份並複製舊程式／`.env`。一般 `rsync -a` 會因現有目錄為 root 擁有而出現 `Permission denied`；如果同步在重啟前失敗，服務仍跑舊進程，先查 health 與磁碟版本，不要在混合狀態重試任務。
 
 **重啟會中斷當前 HTTP 下載**，但會從 `.part` + DB `downloaded_bytes` 自動續傳（v0.3.3+）。
 
@@ -229,6 +234,7 @@ ssh ubuntu@152.70.86.29 '
 7. **單檔失敗**：不中止整任務；可重試 failed 檔。  
 8. **百度轉存**：分享會轉到帳號下 `/PanBridge-Temp/...` 再取 dlink（網盤側可能堆積，可手動清）。  
 9. **不通知**：完成需自己看 UI 或 OneDrive。  
+10. **OneDrive 安全名稱**：v0.4.5 會把禁用字元改成全形並保存實際 Microsoft 名稱；非空檔使用 `rename` 防覆蓋。0-byte 檔在沒有原子防覆蓋保障時會安全失敗。
 
 ---
 
@@ -257,7 +263,7 @@ watch -n 5 'ls -lh /home/ubuntu/panbridge/data/tmp/2/'
 - [ ] Clone 本倉庫：`https://github.com/AI-Phrixus/panbridge`（或轉移後的新 URL）  
 - [ ] 讀 [STATUS.md](./STATUS.md) + 本文件  
 - [ ] 確認能 SSH 到 `ubuntu@152.70.86.29`（OCI 私鑰轉到新筆電）  
-- [ ] `curl` health、核對 Job #7 是否仍為 680/745；v0.4.5 部署後只重試 65 個失敗檔
+- [ ] `curl` health 應回報 v0.4.5；核對 Job #7 為 745/745 `done`
 - [ ] 登入 UI，確認設定頁帳號仍連線  
 - [ ] 向操作者索取**本機私有交接文**（含口令；**不在 GitHub**）  
 - [ ] （可選）Transfer / 改 remote 到新 GitHub 帳號  
@@ -282,7 +288,7 @@ git push -u origin main
 公開倉庫：https://github.com/AI-Phrixus/panbridge
 先讀 docs/HANDOFF.md、docs/STATUS.md、docs/OPERATIONS.md
 生產：ubuntu@152.70.86.29 · 服務 panbridge/cloudflared · 正式入口 https://panbridge.tdtc.indevs.in
-當前：生產 v0.4.4；Job #7 680/745，65 個 OneDrive 非法名稱待 v0.4.5 部署後重試
+當前：生產 v0.4.5；Job #7 745/745 done；回復點 /home/ubuntu/panbridge-backups/20260826T075750Z
 密鑰：操作者會另行提供私有交接文（不在 repo 內）
 當前目標：【填寫】
 ```

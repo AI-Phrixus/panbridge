@@ -65,11 +65,15 @@ watch -n 30 'du -h /home/ubuntu/panbridge/data/tmp/2/* 2>/dev/null; curl -s loca
 
 ## 升級程式
 
-1. 拉最新 git 或 rsync  
-2. `pip install -r requirements.txt`  
-3. `sudo systemctl restart panbridge`  
-4. 確認 health version  
-5. 看進行中任務是否從 `.part` 續傳  
+1. 先確認沒有 `resolving/saving/downloading/uploading` 任務；記錄 health 與磁碟空間。
+2. 建立舊程式、`.env` 與 SQLite `backup()` 一致性回復點。
+3. 拉最新 git 或 rsync；現有 `/home/ubuntu/panbridge` 由 root 擁有，遠端同步需使用 `sudo rsync`，並加 `--no-perms --no-owner --no-group` 保留既有權限。
+4. 用獨立快取預編譯：`PYTHONPYCACHEPREFIX=/tmp/panbridge-release-check .venv/bin/python -m compileall -q app`。
+5. 若依賴有變更，再執行 `.venv/bin/pip install -r requirements.txt`。
+6. `sudo systemctl restart panbridge`。
+7. 確認本機與公開 health 版本、systemd active、`NRestarts=0`；再驗證 HTTPS、Range、播放器與任務續傳。
+
+若普通 rsync 顯示 `Permission denied` 且尚未重啟，線上仍是舊進程；先確認 health，不要直接重試任務。修正同步權限並完成一致部署後再操作生產資料。
 
 ## 磁碟清理
 

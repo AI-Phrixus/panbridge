@@ -100,10 +100,14 @@ docker compose up -d --build
 ### 現有 systemd 實例更新
 
 ```bash
-rsync -avz --exclude '.venv' --exclude 'data' --exclude '.env' \
+rsync -rz --no-perms --no-owner --no-group --omit-dir-times \
+  --rsync-path='sudo rsync' \
+  --exclude '.venv' --exclude 'data' --exclude '.env' --exclude '.git' \
   ./ ubuntu@YOUR_HOST:/home/ubuntu/panbridge/
 ssh ubuntu@YOUR_HOST 'sudo systemctl restart panbridge && curl -s localhost:8080/api/health'
 ```
+
+上述指令適用於現有程式目錄由 root 擁有、且部署帳號可免密 `sudo rsync` 的實例；更新前仍需先備份程式、`.env` 與 SQLite。
 
 ---
 
@@ -165,6 +169,7 @@ Dockerfile     容器
 ## Changelog（摘要）
 
 ### v0.4.5
+- 2026-08-26 已推送 GitHub main 並部署 Oracle；公開／本機 health、HTTPS、播放器與 Range smoke 通過，Job #7 最終 745/745 完成
 - OneDrive 上傳前自動處理禁用字元、控制字元、保留名稱、尾端空白／句點與超長路徑
 - 安全改名使用可辨認的全形字元與穩定短識別碼，避免不同來源檔案在 OneDrive 撞名或互相覆蓋
 - 原始檔名保留在 PanBridge；資料庫另記錄實際 OneDrive 名稱／路徑，雲端位置按鈕可準確定位
