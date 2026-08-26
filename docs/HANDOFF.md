@@ -1,8 +1,8 @@
 # PanBridge 交接手冊（新帳號接手必讀）
 
-> 倉庫版本：**v0.4.4**（實際部署以 `/api/health` 為準）
+> 倉庫版本：**v0.4.5**（實際部署以 `/api/health` 為準）
 >
-> 最後更新：2026-08-20
+> 最後更新：2026-08-26
 > 目的：讓**全新 GitHub / 開發環境**在不依賴舊對話上下文的情況下，能接手運維與開發。
 
 ---
@@ -94,13 +94,13 @@ sudo cat /home/ubuntu/panbridge/.env
 
 | Job | 狀態 | 說明 |
 |-----|------|------|
-| #1 | `done` | 夸克測試任務 |
-| #2 | `downloading` → **onedrive** | 百度「揭秘日 / Disclosure Day」· 主檔 **~24.83 GB** |
+| #1/#2/#4/#5 | `done` | OneDrive 目標均已完成；#4 共 1452 檔 |
+| #6 | `done` | pCloud 806 檔完成 |
+| **#7** | **`failed` 97.31%** | 680/745 完成；65 個 OneDrive 非法來源名稱等 v0.4.5 部署後重試 |
 
-- 大檔 id=6：`.part` 在 `data/tmp/2/6_*.mkv.part`  
-- 快照量級：已下約 **數百 MB**（見 STATUS）；百度限速下可能需 **很長時間**  
-- 小圖部分已 `done`；字幕/其餘 `queued`  
-- **不要**無故 restart；**不要**刪 `.part`
+生產於 2026-08-26 仍是 v0.4.4。v0.4.5 本機修復會安全改名、阻止大小寫／Unicode 同名覆蓋，並保存 Microsoft 實際採用的名稱；部署完成前不要反覆重試 Job #7。
+
+Job #7 的 65 個失敗檔暫存均仍存在，65/65 大小精確（合計 214,436,206 bytes）；修復後可直接重新上傳，不必重下夸克來源。
 
 ```bash
 python3 - <<'PY'
@@ -110,11 +110,10 @@ con.row_factory = sqlite3.Row
 for r in con.execute("SELECT id,status,progress,destination,status_detail FROM jobs"):
     print(dict(r))
 for r in con.execute(
-  "SELECT id,status,downloaded_bytes,size,remote_name FROM files WHERE job_id=2"):
+  "SELECT id,status,downloaded_bytes,uploaded_bytes,size,remote_name "
+  "FROM files WHERE job_id=7"):
     print(dict(r))
 PY
-ls -lh /home/ubuntu/panbridge/data/tmp/2/
-# 隔 30–60s 再 ls，確認 size 在增長
 df -h /
 ```
 
@@ -199,7 +198,7 @@ ssh ubuntu@152.70.86.29 '
 
 ## 7. 帳號連接（設定頁）
 
-瀏覽 `http://152.70.86.29:8080/settings`（需 ADMIN_PASSWORD）
+瀏覽 `https://panbridge.tdtc.indevs.in/settings`（需 ADMIN_PASSWORD）
 
 | 來源/目標 | 方式 |
 |-----------|------|
@@ -258,7 +257,7 @@ watch -n 5 'ls -lh /home/ubuntu/panbridge/data/tmp/2/'
 - [ ] Clone 本倉庫：`https://github.com/AI-Phrixus/panbridge`（或轉移後的新 URL）  
 - [ ] 讀 [STATUS.md](./STATUS.md) + 本文件  
 - [ ] 確認能 SSH 到 `ubuntu@152.70.86.29`（OCI 私鑰轉到新筆電）  
-- [ ] `curl` health、看 job #2 / `.part` 是否增長  
+- [ ] `curl` health、核對 Job #7 是否仍為 680/745；v0.4.5 部署後只重試 65 個失敗檔
 - [ ] 登入 UI，確認設定頁帳號仍連線  
 - [ ] 向操作者索取**本機私有交接文**（含口令；**不在 GitHub**）  
 - [ ] （可選）Transfer / 改 remote 到新 GitHub 帳號  
@@ -282,7 +281,8 @@ git push -u origin main
 ```text
 公開倉庫：https://github.com/AI-Phrixus/panbridge
 先讀 docs/HANDOFF.md、docs/STATUS.md、docs/OPERATIONS.md
-生產：ubuntu@152.70.86.29 · 服務 panbridge · 進行中 job2 大檔勿亂 restart
+生產：ubuntu@152.70.86.29 · 服務 panbridge/cloudflared · 正式入口 https://panbridge.tdtc.indevs.in
+當前：生產 v0.4.4；Job #7 680/745，65 個 OneDrive 非法名稱待 v0.4.5 部署後重試
 密鑰：操作者會另行提供私有交接文（不在 repo 內）
 當前目標：【填寫】
 ```

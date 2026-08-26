@@ -17,7 +17,11 @@ from app.sources.base import SourceFile
 from app.sources.quark import QuarkAuthenticationError
 from app.sinks.pcloud import PCloudSink
 from app.sinks.local import LocalSink
-from app.sinks.onedrive import OneDriveSink
+from app.sinks.onedrive import (
+    OneDrivePermanentUploadError,
+    OneDriveSink,
+    normalize_onedrive_target,
+)
 from app.transfer.disk import ensure_space
 from app.transfer.downloader import downloaded_bytes_on_disk, resumable_download
 
@@ -765,6 +769,11 @@ class Worker:
             parent = str(Path(rel).parent).replace("\\", "/")
             remote_dir = base_path if parent in (".", "") else base_path.rstrip("/") + "/" + parent
             filename = Path(rel).name or sf.name
+            is_onedrive = isinstance(sink, OneDriveSink)
+            if is_onedrive:
+                remote_dir, filename = normalize_onedrive_target(
+                    remote_dir, filename
+                )
 
             async def ul_cb(done: int, total: int) -> None:
                 bps = 0.0
@@ -817,10 +826,16 @@ class Worker:
                 except Exception as e:
                     last_up_err = e
                     log.warning("upload attempt %s failed for %s: %s", up_try + 1, filename, e)
+                    if isinstance(e, OneDrivePermanentUploadError):
+                        break
                     await asyncio.sleep(2 * up_try + 1)
             if last_up_err:
                 raise last_up_err
 
+            remote_dir = str(
+                meta_up.get("_panbridge_remote_folder") or remote_dir
+            )
+            filename = str(meta_up.get("_panbridge_remote_name") or filename)
             final_remote = remote_dir.rstrip("/") + "/" + filename
             is_local = "LocalSink" in type(sink).__name__
             stored = str(meta_up.get("path") or meta_up.get("fileid") or meta_up.get("id") or "")
@@ -837,7 +852,7 @@ class Worker:
                 )
 
             delivery_meta = dict(meta)
-            if "OneDrive" in type(sink).__name__:
+            if is_onedrive:
                 drive_id = str(
                     (meta_up.get("parentReference") or {}).get("driveId") or ""
                 )
@@ -849,6 +864,8 @@ class Worker:
                 delivery_meta["onedrive_delivery"] = {
                     "drive_id": drive_id,
                     "item_id": stored,
+                    "name": filename,
+                    "path": final_remote,
                 }
 
             await self.db.update_file(

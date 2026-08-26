@@ -696,7 +696,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>播放 · {safe_name}</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.4" />
+  <link rel="stylesheet" href="/static/style.css?v=0.4.5" />
   <script async id="hlsLibrary" src="/static/vendor/hls.light.min.js"
     integrity="sha384-R/A0SfcLw9wTUjx6JTLqfFBfDpC0DQOKgiff7C516hTFU9AWjNDazyoPSfFhD3sx"
     crossorigin="anonymous"></script>
@@ -716,7 +716,7 @@ async def play_page(job_id: int, file_id: int, request: Request, _: None = Depen
 <body>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span> 播放 <small style="font-size:.65rem">v0.4.4 · HTTPS / OneDrive 直連</small></div>
+      <div class="logo">Pan<span>Bridge</span> 播放 <small style="font-size:.65rem">v0.4.5 · HTTPS / OneDrive 直連</small></div>
       <nav>
         <a href="/tasks/{job_id}">← 返回任务</a>
         <a href="/">任务列表</a>

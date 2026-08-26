@@ -14,7 +14,7 @@ sudo systemctl status cloudflared
 
 ```bash
 curl -s http://127.0.0.1:8080/api/health
-# {"ok":true,"version":"0.4.4"}
+# {"ok":true,"version":"0.4.5"}
 curl -s https://panbridge.tdtc.indevs.in/api/health
 ```
 

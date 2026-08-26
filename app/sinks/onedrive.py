@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import unicodedata
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
@@ -19,6 +21,179 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 CHUNK = 5 * 1024 * 1024
 _TIMEOUT = httpx.Timeout(connect=30.0, read=180.0, write=180.0, pool=30.0)
 
+# OneDrive/SharePoint rejects these characters even when they are percent
+# encoded in a Graph path. Use visually similar full-width characters so the
+# delivered name remains understandable. A stable hash marker is appended
+# whenever a name changes, preventing distinct source names from colliding.
+_ONEDRIVE_REPLACEMENTS = str.maketrans(
+    {
+        '"': "＂",
+        "*": "＊",
+        ":": "：",
+        "<": "＜",
+        ">": "＞",
+        "?": "？",
+        "/": "／",
+        "\\": "＼",
+        "|": "｜",
+        # Some OneDrive for Business tenants still reject these two.
+        "#": "＃",
+        "%": "％",
+    }
+)
+_ONEDRIVE_RESERVED = {
+    ".lock",
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "desktop.ini",
+    "forms",
+    *(f"com{i}" for i in range(10)),
+    *(f"lpt{i}" for i in range(10)),
+}
+_ONEDRIVE_MAX_PATH = 380  # Microsoft limit is 400 decoded characters; keep margin.
+
+
+class OneDrivePermanentUploadError(RuntimeError):
+    """A retry cannot fix the current Graph upload request."""
+
+
+def _name_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:10]
+
+
+def _fit_changed_name(
+    value: str,
+    original: str,
+    max_length: int,
+    *,
+    preserve_extension: bool,
+) -> str:
+    """Fit a changed name while retaining its extension and collision marker."""
+    marker = f" [pb-{_name_hash(original)}]"
+    suffix = ""
+    stem = value
+    if preserve_extension:
+        candidate = Path(value).suffix
+        # Treat only ordinary short suffixes as extensions. A long final dotted
+        # phrase is part of the title, not a useful extension.
+        if candidate and len(candidate) <= 24 and len(candidate) < len(value):
+            suffix = candidate
+            stem = value[: -len(candidate)]
+    suffix_budget = max(0, max_length - len(marker) - 1)
+    if len(suffix) > suffix_budget:
+        suffix = suffix[:suffix_budget]
+    stem_budget = max(1, max_length - len(marker) - len(suffix))
+    fitted = stem[:stem_budget].rstrip(" .") or "檔案"
+    return (fitted + marker + suffix)[:max_length]
+
+
+def sanitize_onedrive_segment(
+    name: str,
+    *,
+    max_length: int = 180,
+    preserve_extension: bool = False,
+) -> str:
+    """Return a deterministic OneDrive-safe file or folder name.
+
+    The original source name stays in PanBridge's database/UI. Only the
+    delivered OneDrive name is normalized.
+    """
+    original = str(name or "")
+    value = unicodedata.normalize("NFC", original).translate(_ONEDRIVE_REPLACEMENTS)
+    value = "".join(
+        char if ord(char) >= 0x20 and ord(char) != 0x7F else "＿"
+        for char in value
+    )
+    value = value.strip()
+    while value.endswith("."):
+        value = value[:-1] + "．"
+    if value.startswith("~"):
+        value = "～" + value[1:]
+    if value.startswith(("゛", "ဧ")):
+        value = "＿" + value
+    if "_vti_" in value.lower():
+        # Preserve surrounding text and neutralize every case-insensitive hit.
+        lower = value.lower()
+        rebuilt: list[str] = []
+        cursor = 0
+        while True:
+            index = lower.find("_vti_", cursor)
+            if index < 0:
+                rebuilt.append(value[cursor:])
+                break
+            rebuilt.append(value[cursor:index])
+            rebuilt.append("＿vti＿")
+            cursor = index + 5
+        value = "".join(rebuilt)
+    check_name = value.lower()
+    check_stem = Path(value).stem.lower()
+    check_first_component = value.split(".", 1)[0].lower()
+    if (
+        check_name in _ONEDRIVE_RESERVED
+        or check_stem in _ONEDRIVE_RESERVED
+        or check_first_component in _ONEDRIVE_RESERVED
+        or value.startswith("~$")
+    ):
+        value = "＿" + value
+    if not value or value in {".", ".."}:
+        value = "未命名"
+
+    changed = value != original or len(value) > max_length
+    if changed:
+        value = _fit_changed_name(
+            value,
+            original,
+            max_length,
+            preserve_extension=preserve_extension,
+        )
+    return value[:max_length]
+
+
+def normalize_onedrive_target(
+    folder_path: str,
+    filename: str,
+) -> tuple[str, str]:
+    """Normalize a complete upload target and keep it below OneDrive limits."""
+    # PanBridge's remote paths always use '/'. A backslash is a legal source
+    # character but an invalid OneDrive name character, so keep it inside the
+    # segment and sanitize it instead of accidentally turning it into another
+    # directory level.
+    raw_parts = [part for part in str(folder_path or "").split("/") if part]
+    safe_parts = [sanitize_onedrive_segment(part, max_length=110) for part in raw_parts]
+    safe_filename = sanitize_onedrive_segment(
+        filename,
+        max_length=180,
+        preserve_extension=True,
+    )
+    leading_slash = str(folder_path or "").startswith("/")
+
+    def joined_length(parts: list[str]) -> int:
+        return len("/".join([*parts, safe_filename]))
+
+    if joined_length(safe_parts) > _ONEDRIVE_MAX_PATH:
+        # Preserve the recognizable top-level folder and collapse the overly
+        # deep remainder to a stable unique segment.
+        path_hash = _name_hash("/".join(raw_parts))
+        collapsed = f"縮短路徑 [pb-{path_hash}]"
+        safe_parts = [safe_parts[0], collapsed] if safe_parts else [collapsed]
+    if joined_length(safe_parts) > _ONEDRIVE_MAX_PATH:
+        available = max(24, _ONEDRIVE_MAX_PATH - len(safe_filename) - 1)
+        safe_parts = [
+            sanitize_onedrive_segment("/".join(raw_parts), max_length=available)
+        ]
+
+    safe_folder = "/".join(safe_parts)
+    if leading_slash and safe_folder:
+        safe_folder = "/" + safe_folder
+    return safe_folder, safe_filename
+
+
+def _onedrive_name_key(value: str) -> str:
+    """Approximate OneDrive's case-insensitive, Unicode-normalized comparison."""
+    return unicodedata.normalize("NFKC", str(value or "")).casefold().rstrip(" .")
+
 
 class OneDriveSink:
     def __init__(
@@ -34,6 +209,7 @@ class OneDriveSink:
         self.client_id = client_id
         self._on_tokens = on_tokens  # persist rotated tokens (BUG-10)
         self._refresh_cb = refresh_cb
+        self._last_ensured_folder_path = ""
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.access_token}"}
@@ -174,25 +350,44 @@ class OneDriveSink:
 
     async def ensure_folder_path(self, path: str) -> str:
         """Create nested folders under root; return item id of final folder."""
+        path, _ = normalize_onedrive_target(path, "檔案")
+        leading_slash = path.startswith("/")
         path = path.strip("/")
         if not path:
+            self._last_ensured_folder_path = ""
             r = await self._request("GET", f"{GRAPH}/me/drive/root")
             return r.json()["id"]
         parent = "root"
+        resolved_parts: list[str] = []
         for part in path.split("/"):
             if not part:
                 continue
-            parent = await self._ensure_child_folder(parent, part)
+            parent, actual_name = await self._ensure_child_folder_target(parent, part)
+            resolved_parts.append(actual_name)
+        self._last_ensured_folder_path = (
+            ("/" if leading_slash else "") + "/".join(resolved_parts)
+        )
         return parent
 
     async def _ensure_child_folder(self, parent_id: str, name: str) -> str:
+        item_id, _actual_name = await self._ensure_child_folder_target(parent_id, name)
+        return item_id
+
+    async def _ensure_child_folder_target(
+        self, parent_id: str, name: str
+    ) -> tuple[str, str]:
+        name = sanitize_onedrive_segment(name, max_length=110)
         if parent_id == "root":
             list_url = f"{GRAPH}/me/drive/root/children"
             create_url = f"{GRAPH}/me/drive/root/children"
         else:
             list_url = f"{GRAPH}/me/drive/items/{parent_id}/children"
             create_url = f"{GRAPH}/me/drive/items/{parent_id}/children"
-        # paginate children (folders with many files)
+        # Paginate children (folders with many files). OneDrive compares names
+        # case-insensitively and with Unicode compatibility normalization. Reuse
+        # only an exact name; otherwise derive a stable alternate instead of
+        # merging distinct source folders such as "Movie" and "movie".
+        existing_folders: list[dict[str, Any]] = []
         next_url: str | None = list_url
         params: dict[str, str] | None = {"$select": "id,name,folder", "$top": "200"}
         while next_url:
@@ -204,10 +399,27 @@ class OneDriveSink:
                 break
             data = r.json()
             for it in data.get("value") or []:
-                if it.get("name") == name and "folder" in it:
-                    return it["id"]
+                if "folder" in it:
+                    existing_folders.append(it)
             next_url = data.get("@odata.nextLink")
             params = None
+
+        for it in existing_folders:
+            if str(it.get("name") or "") == name:
+                return it["id"], name
+        if any(
+            _onedrive_name_key(it.get("name")) == _onedrive_name_key(name)
+            for it in existing_folders
+        ):
+            name = _fit_changed_name(
+                name,
+                f"onedrive-folder-collision:{name}",
+                110,
+                preserve_extension=False,
+            )
+            for it in existing_folders:
+                if str(it.get("name") or "") == name:
+                    return it["id"], name
 
         r2 = await self._request(
             "POST",
@@ -220,7 +432,8 @@ class OneDriveSink:
             },
         )
         if r2.status_code in (200, 201):
-            return r2.json()["id"]
+            created = r2.json()
+            return created["id"], str(created.get("name") or name)
         if r2.status_code in (409, 400):
             # paginate conflict re-list (BUG-14)
             next_url2: str | None = list_url
@@ -234,8 +447,8 @@ class OneDriveSink:
                     break
                 data3 = r3.json()
                 for it in data3.get("value") or []:
-                    if it.get("name") == name and "folder" in it:
-                        return it["id"]
+                    if str(it.get("name") or "") == name and "folder" in it:
+                        return it["id"], name
                 next_url2 = data3.get("@odata.nextLink")
                 params2 = None
         raise RuntimeError(f"create folder {name}: {r2.status_code} {r2.text[:200]}")
@@ -248,46 +461,48 @@ class OneDriveSink:
         progress_cb: Callable[[int, int], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         size = local_path.stat().st_size
-        folder_id = await self.ensure_folder_path(remote_folder_path)
+        safe_folder, safe_filename = normalize_onedrive_target(
+            remote_folder_path, filename
+        )
+        # Fallback remains the requested target when a test double or future
+        # backend overrides ensure_folder_path without resolving names.
+        self._last_ensured_folder_path = safe_folder
+        folder_id = await self.ensure_folder_path(safe_folder)
+        actual_folder = self._last_ensured_folder_path or safe_folder
 
-        # small file simple upload (< 4MB)
-        if size <= 4 * 1024 * 1024:
-            url = f"{GRAPH}/me/drive/items/{folder_id}:/{quote(filename)}:/content"
-            data = local_path.read_bytes()
-            r = await self._request("PUT", url, content=data, headers={"Content-Type": "application/octet-stream"})
-            if r.status_code not in (200, 201):
-                raise RuntimeError(f"onedrive upload failed: {r.status_code} {r.text[:300]}")
-            try:
-                result = r.json()
-            except Exception as error:
-                raise RuntimeError(
-                    "OneDrive 完成上傳但未返回可核對的檔案資料"
-                ) from error
-            if not isinstance(result, dict) or "size" not in result:
-                raise RuntimeError(
-                    "OneDrive 完成上傳但未返回可核對的檔案資料"
-                )
-            remote_id = str(result.get("id") or "")
-            remote_size = int(result.get("size") or 0)
-            if not remote_id or remote_size != size:
-                raise RuntimeError(
-                    "OneDrive 上傳後資料不符: "
-                    f"id={bool(remote_id)} local={size} remote={remote_size}"
-                )
-            if progress_cb:
-                await progress_cb(size, size)
-            return result
+        # Graph upload sessions support rename-on-conflict. Use them for every
+        # non-empty file, including small files, so a case/Unicode-equivalent
+        # name can never silently replace an unrelated OneDrive item. Personal
+        # OneDrive cannot portably commit a zero-byte upload session; fail
+        # closed instead of using simple PUT, which could overwrite an existing
+        # non-empty file with the same name.
+        if size == 0:
+            raise OneDrivePermanentUploadError(
+                "OneDrive 安全上傳拒絕空檔：無法在不覆蓋同名項目的情況下提交 0 bytes"
+            )
 
-        # upload session for large files
-        sess_url = f"{GRAPH}/me/drive/items/{folder_id}:/{quote(filename)}:/createUploadSession"
+        # Upload sessions are also used for small files to guarantee the same
+        # conflict and integrity semantics at every size.
+        sess_url = (
+            f"{GRAPH}/me/drive/items/{folder_id}:/{quote(safe_filename, safe='')}"
+            ":/createUploadSession"
+        )
         r = await self._request(
             "POST",
             sess_url,
             headers={"Content-Type": "application/json"},
-            json={"item": {"@microsoft.graph.conflictBehavior": "replace", "name": filename}},
+            json={
+                "item": {
+                    "@microsoft.graph.conflictBehavior": "rename",
+                    "name": safe_filename,
+                }
+            },
         )
         if r.status_code >= 400:
-            raise RuntimeError(f"createUploadSession: {r.status_code} {r.text[:300]}")
+            error = f"createUploadSession: {r.status_code} {r.text[:300]}"
+            if r.status_code == 400:
+                raise OneDrivePermanentUploadError(error)
+            raise RuntimeError(error)
         upload_url = r.json()["uploadUrl"]
 
         sent = 0
@@ -334,6 +549,12 @@ class OneDriveSink:
                                         f"id={bool(remote_id)} local={size} "
                                         f"remote={remote_size}"
                                     )
+                                final_item = dict(final_item)
+                                actual_name = str(
+                                    final_item.get("name") or safe_filename
+                                )
+                                final_item["_panbridge_remote_folder"] = actual_folder
+                                final_item["_panbridge_remote_name"] = actual_name
                                 return final_item
                             last_err = None
                             break
@@ -388,7 +609,8 @@ class OneDriveSink:
         return await self.root_web_url()
 
     async def web_url_for_folder_path(self, remote_folder_path: str) -> str:
-        path = remote_folder_path.strip().lstrip("/")
+        safe_folder, _ = normalize_onedrive_target(remote_folder_path, "檔案")
+        path = safe_folder.strip().lstrip("/")
         if not path:
             return await self.root_web_url()
         r = await self._request("GET", f"{GRAPH}/me/drive/root:/{quote(path, safe='/')}:")
@@ -396,7 +618,11 @@ class OneDriveSink:
             return (r.json().get("webUrl") or "").strip() or await self.root_web_url()
         try:
             await self.ensure_folder_path(path)
-            r3 = await self._request("GET", f"{GRAPH}/me/drive/root:/{quote(path, safe='/')}:")
+            resolved_path = self._last_ensured_folder_path.strip().lstrip("/") or path
+            r3 = await self._request(
+                "GET",
+                f"{GRAPH}/me/drive/root:/{quote(resolved_path, safe='/')}:",
+            )
             if r3.status_code < 400:
                 return (r3.json().get("webUrl") or "").strip() or await self.root_web_url()
         except Exception:

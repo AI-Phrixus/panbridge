@@ -97,7 +97,7 @@ class RangeTransport(httpx.AsyncBaseTransport):
 
 
 def test_fix_release_version():
-    assert Version(Settings().app_version) >= Version("0.4.4")
+    assert Version(Settings().app_version) >= Version("0.4.5")
 
 
 def _request_scope(*, scheme: str, client: str, path: str = "/", query: bytes = b""):
@@ -901,7 +901,7 @@ async def test_player_playlist_supports_windows_vlc_potplayer_and_infuse(
     assert "Windows / VLC" in page_html
     assert "Infuse 付費版" in page_html
     assert f'href="/api/tasks/{job_id}/files/{file_id}/open/infuse"' in page_html
-    assert "v0.4.4 · HTTPS / OneDrive 直連" in page_html
+    assert "v0.4.5 · HTTPS / OneDrive 直連" in page_html
     assert page.headers["cache-control"] == "no-store"
     assert '<video id="v"' not in page_html
     assert "transcode=1" not in page_html
@@ -1095,10 +1095,30 @@ async def test_onedrive_small_upload_requires_exact_final_metadata(
         return "folder"
 
     async def fake_request(method: str, url: str, **kwargs):
-        return httpx.Response(status, json=body)
+        assert method == "POST"
+        return httpx.Response(
+            200, json={"uploadUrl": "https://upload.example/small-session"}
+        )
+
+    class UploadClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def put(self, url: str, content: bytes, headers: dict[str, str]):
+            assert url == "https://upload.example/small-session"
+            assert content == b"x" * 100
+            assert headers["Content-Range"] == "bytes 0-99/100"
+            return httpx.Response(status, json=body)
 
     monkeypatch.setattr(sink, "ensure_folder_path", fake_folder)
     monkeypatch.setattr(sink, "_request", fake_request)
+    monkeypatch.setattr("app.sinks.onedrive.httpx.AsyncClient", UploadClient)
     with pytest.raises(RuntimeError):
         await sink.upload_file(source, "/PanBridge", "small.bin")
 
@@ -1115,18 +1135,37 @@ async def test_onedrive_small_upload_accepts_exact_final_metadata(
         return "folder"
 
     async def fake_request(method: str, url: str, **kwargs):
+        assert method == "POST"
+        assert kwargs["json"]["item"]["@microsoft.graph.conflictBehavior"] == "rename"
         return httpx.Response(
-            201,
-            json={
-                "id": "item",
-                "name": "small.bin",
-                "size": 100,
-                "parentReference": {"driveId": "drive"},
-            },
+            200, json={"uploadUrl": "https://upload.example/small-session"}
         )
+
+    class UploadClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def put(self, url: str, content: bytes, headers: dict[str, str]):
+            assert url == "https://upload.example/small-session"
+            return httpx.Response(
+                201,
+                json={
+                    "id": "item",
+                    "name": "small.bin",
+                    "size": 100,
+                    "parentReference": {"driveId": "drive"},
+                },
+            )
 
     monkeypatch.setattr(sink, "ensure_folder_path", fake_folder)
     monkeypatch.setattr(sink, "_request", fake_request)
+    monkeypatch.setattr("app.sinks.onedrive.httpx.AsyncClient", UploadClient)
     result = await sink.upload_file(source, "/PanBridge", "small.bin")
     assert result["id"] == "item"
     assert result["size"] == 100
@@ -1695,7 +1734,7 @@ async def test_player_links_and_task_ui_offer_direct_infuse_and_windows_buttons(
     assert "/open/infuse" in task_html
     assert "/open/vlc" in task_html
     assert "/open/potplayer" in task_html
-    assert "v0.4.4 · HTTPS / OneDrive 直連" in task_html
+    assert "v0.4.5 · OneDrive 安全命名" in task_html
     await db.close()
 
 

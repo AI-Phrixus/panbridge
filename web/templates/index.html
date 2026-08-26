@@ -4,12 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PanBridge</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.4" />
+  <link rel="stylesheet" href="/static/style.css?v=0.4.5" />
 </head>
 <body>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span> <span class="muted" style="font-size:.75rem;font-weight:500" id="appver">v0.4.4 · HTTPS / OneDrive 直連與完整性核對</span></div>
+      <div class="logo">Pan<span>Bridge</span> <span class="muted" style="font-size:.75rem;font-weight:500" id="appver">v0.4.5 · OneDrive 安全命名與可靠上傳</span></div>
       <nav>
         <a href="/">任務</a>
         <a href="/settings">帳號設定</a>
@@ -43,6 +43,7 @@
         <option value="pcloud">強制：pCloud（免費空間小，大文件會失敗）</option>
         <option value="local">強制：服務器暫存（僅自己下載，注意條款與磁盤）</option>
       </select>
+      <p class="muted">OneDrive 不接受的檔名字元會自動換成容易辨認的全形字元，並加上短識別碼避免同名覆蓋；PanBridge 仍保留原始檔名供你辨識。</p>
       <p class="muted" style="margin-top:8px">大文件請選 OneDrive。pCloud 免費約 4GB；VPS 暫存有條款與磁盤限制。</p>
       <div class="actions">
         <button id="submit">開始後台搬運</button>
