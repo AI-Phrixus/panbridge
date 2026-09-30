@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -25,6 +26,37 @@ _REQUEST_REFRESH_SECONDS = 20 * 60.0
 _SLICE_MIN = 8 * 1024 * 1024
 _SLICE_MAX = 64 * 1024 * 1024
 _MAX_CONNECTIONS = 8
+
+
+class _BorrowedDownloadTransport(httpx.AsyncBaseTransport):
+    """Use the owner's pool/proxy routing, but never build requests with its jar."""
+
+    def __init__(self, owner: httpx.AsyncClient):
+        self.owner = owner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        # send() preserves the caller's already-built headers and timeouts;
+        # unlike request(), it does not merge the owner's persistent cookies.
+        return await self.owner.send(request, stream=True, follow_redirects=False)
+
+    async def aclose(self) -> None:
+        # The file-scoped owner closes sockets after all borrowers have drained.
+        pass
+
+
+@asynccontextmanager
+async def _borrow_download_client(client: httpx.AsyncClient):
+    """Fresh cookies for each attempt, shared TCP/TLS pool for the whole file.
+
+    Redirect cookies work within one attempt but cannot override freshly
+    refreshed authentication in another slice/retry. The owner retains normal
+    HTTPX environment-proxy routing. Pools are never shared across files/jobs.
+    """
+    async with httpx.AsyncClient(
+        transport=_BorrowedDownloadTransport(client),
+        timeout=_dl_timeout(), follow_redirects=True,
+    ) as borrower:
+        yield borrower
 
 
 class RangeNotSupportedError(RuntimeError):
@@ -359,7 +391,19 @@ async def _single_stream_download(
     max_retries: int,
     url_refresh_cb: Callable[[], Awaitable[str]] | None = None,
     request_refresh_cb: RequestRefreshCB | None = None,
+    *,
+    _client: httpx.AsyncClient | None = None,
 ) -> Path:
+    if _client is None:
+        async with httpx.AsyncClient(
+            timeout=_dl_timeout(), follow_redirects=True,
+            limits=httpx.Limits(max_connections=1, max_keepalive_connections=1,
+                                keepalive_expiry=30.0),
+        ) as client:
+            return await _single_stream_download(
+                url, part, headers, expected_size, progress_cb, max_retries,
+                url_refresh_cb, request_refresh_cb, _client=client,
+            )
     settings = get_settings()
     attempt = 0
     current_url = url
@@ -399,7 +443,7 @@ async def _single_stream_download(
             req_headers["Range"] = f"bytes={existing}-"
 
         try:
-            async with httpx.AsyncClient(timeout=_dl_timeout(), follow_redirects=True) as client:
+            async with _borrow_download_client(_client) as client:
                 async with client.stream("GET", current_url, headers=req_headers) as resp:
                     if resp.status_code in (401, 403, 404, 412, 416):
                         try:
@@ -726,7 +770,7 @@ async def _parallel_range_download(
             got = 0
             offset = start
             try:
-                async with httpx.AsyncClient(timeout=_dl_timeout(), follow_redirects=True) as client:
+                async with _borrow_download_client(shared_client) as client:
                     async with client.stream("GET", current_url, headers=request_headers) as response:
                         if response.status_code in (401, 403, 404, 412, 416):
                             try:
@@ -845,16 +889,26 @@ async def _parallel_range_download(
         async with semaphore:
             await fetch_slice(start, end)
 
-    tasks = [asyncio.create_task(wrapped(start, end)) for start, end in ranges]
-    try:
-        await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        # Leave the sparse file plus atomic metadata for the worker's next retry.
-        raise
+    # Keep TLS/TCP connections alive across slices and retries, while bounding
+    # sockets to the same concurrency budget as the range scheduler.
+    async with httpx.AsyncClient(
+        timeout=_dl_timeout(), follow_redirects=True,
+        limits=httpx.Limits(
+            max_connections=max(1, connections),
+            max_keepalive_connections=max(1, connections),
+            keepalive_expiry=30.0,
+        ),
+    ) as shared_client:
+        tasks = [asyncio.create_task(wrapped(start, end)) for start, end in ranges]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # Drain workers before closing their pool or leaving checkpoints.
+            raise
 
     if len(done_set) < len(ranges):
         missing = [key for key in range_by_key if key not in done_set]
