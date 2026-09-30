@@ -42,6 +42,24 @@ def install_transport(monkeypatch, handler):
     monkeypatch.setattr(httpx, "AsyncClient", factory)
 
 
+@pytest.mark.asyncio
+async def test_copy_google_repeated_requests_reuse_unfinished_job(store, monkeypatch):
+    original = await store.create_job('quark', 'https://pan.quark.cn/s/copy', destination='onedrive')
+    await store.set_credential('google', 'configured')
+    await store.set_credential('quark', 'configured')
+    async def credential(database):
+        return {'account_id':'same-account'}
+    monkeypatch.setattr(tasks, 'google_credential', credential)
+    first, second = await asyncio.gather(
+        tasks.copy_task_to_google(original, tasks.CopyTaskIn()),
+        tasks.copy_task_to_google(original, tasks.CopyTaskIn()),
+    )
+    assert first['job_id'] == second['job_id']
+    assert second['reused'] is True
+    assert len(await store.list_jobs()) == 2
+    assert (await store.get_job(original))['destination'] == 'onedrive'
+
+
 async def token(force=False):
     return "fresh" if force else "old"
 

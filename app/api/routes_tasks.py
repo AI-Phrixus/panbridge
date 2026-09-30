@@ -363,6 +363,21 @@ async def copy_task_to_google(job_id: int, body: CopyTaskIn, _: None = Depends(r
         if not await db.get_credential(original["source_type"]):
             raise HTTPException(400, "來源帳號未連接")
         credential = await google_credential(db)
+        # A timed-out browser action can be repeated after the first request
+        # already committed. Reuse matching unfinished work under this lock.
+        existing = await db.conn.execute(
+            "SELECT id FROM jobs WHERE id != ? AND destination='google' "
+            "AND source_type=? AND share_url=? AND COALESCE(passcode,'')=? "
+            "AND pcloud_path=? AND target_account_id=? "
+            "AND status IN ('queued','resolving','saving','awaiting_selection',"
+            "'downloading','uploading','paused') ORDER BY id LIMIT 1",
+            (job_id, original['source_type'], original['share_url'],
+             original.get('passcode') or '', original.get('pcloud_path') or '/PanBridge',
+             credential['account_id']),
+        )
+        same = await existing.fetchone()
+        if same:
+            return {"ok": True, "job_id": same['id'], "original_job_id": job_id, "reused": True}
         copied = await db.create_job(
             source_type=original["source_type"], share_url=original["share_url"],
             passcode=original.get("passcode") or "", title=original.get("title") or "",

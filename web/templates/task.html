@@ -139,7 +139,19 @@
     function selectVisible(checked){document.querySelectorAll('#files tr:not([hidden]) input[data-file-id]').forEach(el=>{el.checked=checked; toggleFile(Number(el.dataset.fileId),checked);});}
     async function confirmSelection(){if(!selectedIds.size){alert('請至少選一個文件');return;} const r=await fetch('/api/tasks/'+jobId+'/selection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_ids:[...selectedIds]})});const d=await r.json().catch(()=>({}));if(!r.ok){alert(d.detail||'選檔失敗');return;} await load();}
     async function controlJob(action){if(action==='delete'&&!confirm('移除任務並停止搬運？雲端文件不刪除，未完成暫存先保留。'))return; const r=await fetch('/api/tasks/'+jobId+(action==='delete'?'':'/'+action),{method:action==='delete'?'DELETE':'POST'});const d=await r.json().catch(()=>({}));if(!r.ok){alert(d.detail||'操作失敗');return;}if(action==='delete'){location.href='/';return;}await load();}
-    async function copyToGoogle(){if(!confirm('保留原任務，另建 Google Drive 任務並先讓你選檔？'))return;const r=await fetch('/api/tasks/'+jobId+'/copy-to-google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({select_files:true})});const d=await r.json().catch(()=>({}));if(!r.ok){alert(d.detail||'建立失敗');return;}location.href='/tasks/'+d.job_id;}
+    let copyingToGoogle = false;
+    async function copyToGoogle(){
+      if(copyingToGoogle)return;
+      copyingToGoogle=true;
+      try{
+        if(!confirm('保留原任務，建立或開啟 Google Drive 任務並先讓你選檔？'))return;
+        const r=await fetch('/api/tasks/'+jobId+'/copy-to-google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({select_files:true})});
+        const d=await r.json().catch(()=>({}));
+        if(!r.ok){alert(d.detail||'建立失敗');return;}
+        location.href='/tasks/'+d.job_id;
+      }catch(e){alert('連線中斷，請再試；已建立的任務會被復用。');}
+      finally{copyingToGoogle=false;}
+    }
     window.retryJob = async function(){
       const r = await fetch('/api/tasks/'+jobId+'/retry', {method:'POST'});
       const d = await r.json().catch(()=>({}));
