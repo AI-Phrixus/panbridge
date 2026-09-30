@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 
 from app.api.deps import require_auth
 from app.auth.onedrive_session import make_onedrive_sink
+from app.auth.google_session import make_google_sink
 from app.config import get_settings
 from app.db import db
 from app.security import decrypt_json
@@ -61,7 +62,16 @@ async def file_location(job_id: int, file_id: int, _: None = Depends(require_aut
     }
 
     try:
-        if dest == "onedrive":
+        if dest == "google":
+            delivered = json.loads(f.get("meta_json") or "{}").get("google_delivery") or {}
+            item_id = delivered.get("item_id") or f.get("pcloud_fileid")
+            if f["status"] != "done" or not item_id:
+                raise HTTPException(409, "文件尚未交付 Google Drive")
+            result["url"] = "https://drive.google.com/file/d/" + quote(str(item_id), safe="") + "/view"
+            if delivered.get("parent_id"):
+                result["folder_url"] = "https://drive.google.com/drive/folders/" + quote(delivered["parent_id"], safe="")
+            result["note"] = "私人 Google Drive 文件；需登入已授權帳號"
+        elif dest == "onedrive":
             od = await _onedrive_sink()
             if path:
                 try:
@@ -117,6 +127,12 @@ async def job_folder_location(job_id: int, _: None = Depends(require_auth)):
         raise HTTPException(404, "not found")
     dest = (job.get("destination") or "auto").lower()
     folder = job.get("pcloud_path") or "/PanBridge"
+    if dest == "google":
+        try:
+            sink = await make_google_sink(db)
+            return {"url": await sink.folder_url(folder), "kind": "google", "folder": folder}
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc)) from exc
     if dest == "local":
         return {
             "url": f"/browse/local/{job_id}",

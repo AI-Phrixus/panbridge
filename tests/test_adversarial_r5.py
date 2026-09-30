@@ -94,4 +94,4 @@ def test_mark_waiting_not_always_full():
 
 def test_cancel_does_not_overwrite_user_cancel_msg():
     src = Path("app/workers/runner.py").read_text()
-    assert 'j.get("status") != "cancelled"' in src
+    assert 'j.get("status") not in ("cancelled", "paused", "deleted", "awaiting_selection")' in src

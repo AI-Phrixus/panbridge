@@ -98,6 +98,10 @@ class Database:
             alters.append("ALTER TABLE jobs ADD COLUMN status_detail TEXT DEFAULT ''")
         if "destination" not in cols:
             alters.append("ALTER TABLE jobs ADD COLUMN destination TEXT DEFAULT 'auto'")
+        if "select_files" not in cols:
+            alters.append("ALTER TABLE jobs ADD COLUMN select_files INTEGER NOT NULL DEFAULT 0")
+        if "target_account_id" not in cols:
+            alters.append("ALTER TABLE jobs ADD COLUMN target_account_id TEXT NOT NULL DEFAULT ''")
         for sql in alters:
             await self.conn.execute(sql)
         if alters:
@@ -137,14 +141,16 @@ class Database:
         title: str = "",
         pcloud_path: str = "",
         destination: str = "auto",
+        select_files: bool = False,
+        target_account_id: str = "",
     ) -> int:
         now = _now()
         cur = await self.conn.execute(
             """
-            INSERT INTO jobs(source_type, share_url, passcode, title, status, progress, pcloud_path, destination, created_at, updated_at)
-            VALUES(?,?,?,?, 'queued', 0, ?, ?, ?, ?)
+            INSERT INTO jobs(source_type, share_url, passcode, title, status, progress, pcloud_path, destination, created_at, updated_at, select_files, target_account_id)
+            VALUES(?,?,?,?, 'queued', 0, ?, ?, ?, ?, ?, ?)
             """,
-            (source_type, share_url, passcode, title, pcloud_path, destination or "auto", now, now),
+            (source_type, share_url, passcode, title, pcloud_path, destination or "auto", now, now, int(select_files), target_account_id),
         )
         await self.conn.commit()
         return int(cur.lastrowid)
@@ -153,6 +159,8 @@ class Database:
         "source_type", "share_url", "passcode", "title", "status", "progress",
         "error_message", "pcloud_path", "destination", "speed_bps", "status_detail",
         "updated_at", "created_at",
+        "select_files",
+        "target_account_id",
     })
     _FILE_COLS = frozenset({
         "source_fid", "remote_name", "relative_path", "size", "local_path",
@@ -181,7 +189,7 @@ class Database:
         return dict(row) if row else None
 
     async def list_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
-        cur = await self.conn.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,))
+        cur = await self.conn.execute("SELECT * FROM jobs WHERE status != 'deleted' ORDER BY id DESC LIMIT ?", (limit,))
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
@@ -319,7 +327,7 @@ class Database:
                 )
               ), 0) AS weighted
             FROM files
-            WHERE job_id = ?
+            WHERE job_id = ? AND status != 'skipped'
             """,
             (job_id,),
         )

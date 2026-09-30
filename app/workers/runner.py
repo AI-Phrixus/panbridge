@@ -11,6 +11,8 @@ from app.config import get_settings
 from app.db import Database
 from app.security import decrypt_json
 from app.auth.onedrive_session import make_onedrive_sink
+from app.auth.google_session import make_google_sink, GoogleAuthenticationError
+from app.sinks.google import GooglePermanentUploadError
 from app.auth.quark_session import load_quark_source
 from app.sources.baidu import BaiduSource
 from app.sources.base import SourceFile
@@ -40,7 +42,7 @@ def _fmt_speed(bps: float) -> str:
 
 def _is_auth_error(error: Exception) -> bool:
     message = str(error).lower()
-    return isinstance(error, QuarkAuthenticationError) or any(
+    return isinstance(error, (QuarkAuthenticationError, GoogleAuthenticationError)) or any(
         marker in message
         for marker in (
             "登入已失效",
@@ -224,7 +226,7 @@ class Worker:
             # ADV-R5: do NOT overwrite user cancel message with「等待自動續傳」
             try:
                 j = await self.db.get_job(job_id)
-                if j and j.get("status") != "cancelled":
+                if j and j.get("status") not in ("cancelled", "paused", "deleted", "awaiting_selection"):
                     await self.db.update_job(
                         job_id,
                         status_detail="任務中斷，等待自動續傳…",
@@ -237,6 +239,8 @@ class Worker:
             log.exception("job %s failed", job_id)
             current = await self.db.get_job(job_id)
             failed_phase = (current or {}).get("status") or ""
+            if failed_phase in ("cancelled", "paused", "deleted", "awaiting_selection"):
+                return
             if failed_phase in ("resolving", "saving"):
                 # A crash/error while inserting a large resolved file list can
                 # leave a plausible-looking but incomplete subset. Force the
@@ -269,7 +273,7 @@ class Worker:
 
     async def _run_job(self, job_id: int) -> None:
         job = await self.db.get_job(job_id)
-        if not job or job["status"] == "cancelled":
+        if not job or job["status"] in ("cancelled", "paused", "deleted", "awaiting_selection"):
             return
 
         settings = get_settings()
@@ -332,19 +336,35 @@ class Worker:
                     meta=sf.meta,
                 )
             share_meta = resolved.meta
+            if job.get("select_files"):
+                await self.db.update_job(
+                    job_id, status="awaiting_selection", speed_bps=0,
+                    status_detail="請選擇要下載的文件，確認後才開始搬運",
+                )
+                return
             # mark past resolve so we won't wipe files on next resume
             await self.db.update_job(
                 job_id, status="downloading", status_detail="準備下載…"
             )
             files = await self.db.list_files(job_id)
 
-        base_path = (await self.db.get_job(job_id) or {}).get("pcloud_path") or settings.pcloud_default_path
+        current_job = await self.db.get_job(job_id) or {}
+        if current_job.get("select_files"):
+            await self.db.update_job(job_id, status="awaiting_selection", speed_bps=0,
+                                     status_detail="請選擇要下載的文件，確認後才開始搬運")
+            return
+        base_path = current_job.get("pcloud_path") or settings.pcloud_default_path
         job_tmp = settings.tmp_path / str(job_id)
         job_tmp.mkdir(parents=True, exist_ok=True)
 
-        total_size = sum(int(f.get("size") or 0) for f in files)
+        total_size = sum(int(f.get("size") or 0) for f in files if f["status"] not in ("done", "skipped"))
 
         dest, sink, dest_note = await self._pick_destination(destination, total_size, settings)
+        if dest == "google":
+            bound = current_job.get("target_account_id") or ""
+            if bound and bound != sink.account_id:
+                raise RuntimeError("此任務綁定另一個 Google 帳號，已停止搬運；請連回原帳號或另建任務")
+            await self.db.update_job(job_id, target_account_id=sink.account_id)
         await self.db.update_job(job_id, destination=dest)
         # Don't require free space for ALL remaining files up-front (sequential download).
         # Per-file ensure_space runs in _process_file.
@@ -358,10 +378,9 @@ class Worker:
                 f["status"] = "queued"
         for f in files:
             job = await self.db.get_job(job_id)
-            if job and job["status"] == "cancelled":
-                await self.db.update_job(job_id, status="cancelled", status_detail="已取消", speed_bps=0)
+            if not job or job["status"] in ("cancelled", "paused", "deleted", "awaiting_selection"):
                 return
-            if f["status"] == "done":
+            if f["status"] in ("done", "skipped"):
                 continue
             # Skip files still marked failed unless re-queued via retry API
             if f["status"] == "failed":
@@ -388,11 +407,16 @@ class Worker:
                         speed_bps=0,
                     )
                     return
+                if isinstance(e, GooglePermanentUploadError):
+                    await self.db.update_job(job_id, status="failed", error_message=str(e),
+                        status_detail="Google Drive 拒絕搬運；已停止，請檢查空間或權限後重試", speed_bps=0)
+                    return
                 # Per-file failure must not abort the whole job (remaining files still process)
                 log.exception("job %s file %s failed", job_id, f.get("id"))
                 file_errors.append(f"{f.get('remote_name')}: {e}")
             prog = await self.db.recompute_job_progress(job_id)
             snap = await self.db.list_files(job_id)
+            snap = [x for x in snap if x["status"] != "skipped"]
             n_done = sum(1 for x in snap if x["status"] == "done")
             await self.db.update_job(
                 job_id,
@@ -402,14 +426,17 @@ class Worker:
 
         files = await self.db.list_files(job_id)
         j2 = await self.db.get_job(job_id)
-        if j2 and j2["status"] == "cancelled":
+        if not j2 or j2["status"] in ("cancelled", "paused", "deleted", "awaiting_selection"):
             return
+        files = [x for x in files if x["status"] != "skipped"]
         if all(x["status"] == "done" for x in files) and files:
             dest = (j2 or {}).get("destination") or "pcloud"
             if dest == "local":
                 detail = "全部完成 · 請到本站「任務詳情」下載（伺服器暫存）"
             elif dest == "onedrive":
                 detail = "全部完成 · 請到 OneDrive 自取"
+            elif dest == "google":
+                detail = "全部完成 · 已交付 Google Drive"
             else:
                 detail = "全部完成 · 請到 pCloud 自取"
             await self.db.update_job(
@@ -452,6 +479,14 @@ class Worker:
         if t and not t.done():
             t.cancel()
 
+    async def interrupt_job(self, job_id: int) -> None:
+        """Wait for download checkpoint flush before a control action completes."""
+        t = self._job_tasks.get(job_id)
+        if t and not t.done():
+            t.cancel()
+            await asyncio.gather(t, return_exceptions=True)
+        self._running_jobs.discard(job_id)
+
     async def _make_onedrive_sink(self) -> "OneDriveSink":
         return await make_onedrive_sink(self.db)
 
@@ -463,6 +498,16 @@ class Worker:
 
         def local_sink():
             return LocalSink(delivered)
+
+        if destination == "local":
+            return "local", local_sink(), "目標: 伺服器暫存（網頁下載）"
+        if destination == "google" or (destination == "auto" and await self.db.get_credential("google")):
+            sink = await make_google_sink(self.db)
+            space = await sink.space_info()
+            available = space["free"]
+            if available is not None and total_size > available:
+                raise RuntimeError("Google Drive 空間不足，請清理空間後重試")
+            return "google", sink, "目標: Google Drive（私人文件、不公開分享）"
 
         pcloud_free = None
         pcloud_sink = None
@@ -556,14 +601,15 @@ class Worker:
         final_path = job_tmp / local_name
 
         async def record_resume_state(status: str, error_message: str) -> None:
-            verified = downloaded_bytes_on_disk(part_path, sf.size)
+            checkpoint = final_path if final_path.is_file() and final_path.stat().st_size == sf.size > 0 else part_path
+            verified = downloaded_bytes_on_disk(checkpoint, sf.size)
             fields: dict[str, Any] = {
                 "status": status,
                 "error_message": error_message,
                 "downloaded_bytes": verified,
             }
-            if part_path.exists():
-                fields["local_path"] = str(part_path)
+            if checkpoint.exists():
+                fields["local_path"] = str(checkpoint)
             await self.db.update_file(file_id, **fields)
 
         try:
@@ -826,7 +872,7 @@ class Worker:
                 except Exception as e:
                     last_up_err = e
                     log.warning("upload attempt %s failed for %s: %s", up_try + 1, filename, e)
-                    if isinstance(e, OneDrivePermanentUploadError):
+                    if isinstance(e, (OneDrivePermanentUploadError, GooglePermanentUploadError)) or _is_auth_error(e):
                         break
                     await asyncio.sleep(2 * up_try + 1)
             if last_up_err:
@@ -852,6 +898,11 @@ class Worker:
                 )
 
             delivery_meta = dict(meta)
+            if "GoogleDriveSink" in type(sink).__name__:
+                delivery_meta["google_delivery"] = {
+                    "item_id": stored, "parent_id": (meta_up.get("parents") or [""])[0],
+                    "name": filename, "path": final_remote,
+                }
             if is_onedrive:
                 drive_id = str(
                     (meta_up.get("parentReference") or {}).get("driveId") or ""

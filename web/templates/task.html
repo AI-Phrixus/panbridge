@@ -4,12 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>任務 · PanBridge</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.5" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.0" />
 </head>
 <body>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span> <small style="font-size:.65rem">v0.4.5 · OneDrive 安全命名</small></div>
+      <div class="logo">Pan<span>Bridge</span> <small style="font-size:.65rem">選檔 · 暫停 · 雲端搬運</small></div>
       <nav>
         <a href="/">← 任務列表</a>
         <a href="/settings">帳號設定</a>
@@ -23,7 +23,13 @@
     </div>
     <div class="card">
       <h3>檔案</h3>
-      <p class="muted">搬運完成後，Infuse／VLC／PotPlayer 會直接讀取 OneDrive HTTPS 直鏈，不再由 Oracle 轉送影片資料。若原檔名含 OneDrive 禁止字元，雲端副本會自動安全改名，原始名稱仍顯示在此。</p>
+      <p class="muted">Google Drive 私人文件：Infuse 請在「新增檔案 → 新增共享」連接 Google Drive；Windows／Mac 的 VLC 可開啟 Google Drive 電腦版中的串流文件。不要把私人文件改為公開分享。Oracle 不轉送已交付的影片。</p>
+      <div id="selection" hidden>
+        <p>勾選想要下載的文件，未選文件不會下载。</p>
+        <input id="filter-files" placeholder="搜尋文件名稱或資料夾" oninput="filterFiles()" />
+        <div class="actions"><button class="secondary" onclick="selectVisible(true)">選取搜尋結果</button><button class="secondary" onclick="selectVisible(false)">取消搜尋結果</button><button onclick="confirmSelection()">確認並開始搬運</button></div>
+        <p id="selection-summary" class="muted"></p>
+      </div>
       <table>
         <thead>
           <tr><th>路徑</th><th>大小</th><th>下載</th><th>上傳</th><th>狀態</th><th>操作</th></tr>
@@ -34,6 +40,9 @@
   </div>
   <script>
     const jobId = {{ job_id }};
+    const selectedIds = new Set();
+    let currentFiles = [];
+    let currentStatus = '';
     function fmt(n){
       n = Number(n)||0;
       if (n < 1024) return n+' B';
@@ -41,7 +50,7 @@
       if (n < 1073741824) return (n/1048576).toFixed(1)+' MB';
       return (n/1073741824).toFixed(2)+' GB';
     }
-    function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
     async function openLocation(jobId, fileId){
       try {
         const r = await fetch('/api/tasks/'+jobId+'/files/'+fileId+'/location');
@@ -64,7 +73,10 @@
     async function load(){
       const r = await fetch('/api/tasks/'+jobId);
       if (r.status===401){ location.href='/login'; return; }
+      if (!r.ok) { document.getElementById('err').textContent='任務不存在或已移除'; return; }
       const {job, files} = await r.json();
+      currentStatus = job.status; currentFiles = files || [];
+      document.getElementById('selection').hidden = job.status !== 'awaiting_selection';
       const spd = (function(bps){bps=Number(bps)||0; if(bps<=0)return ''; if(bps<1048576)return (bps/1024).toFixed(1)+' KB/s'; return (bps/1048576).toFixed(2)+' MB/s';})(job.speed_bps);
       const dest = job.destination || 'auto';
       document.getElementById('meta').innerHTML =
@@ -76,12 +88,16 @@
       document.getElementById('err').textContent = job.error_message||'';
       const ja = document.getElementById('jobActions');
       let acts = `<button type="button" class="secondary" onclick="openJobFolder()">在雲端開啟此任務資料夾</button>`;
+      if (dest !== 'google') acts += ` <button onclick="copyToGoogle()">重新搬運到 Google Drive</button>`;
       if (job.status === 'failed' || job.status === 'cancelled') {
         acts += ` <button type="button" class="secondary" onclick="retryJob()">重試</button>`;
       }
-      if (['done','cancelled','failed'].indexOf(job.status) < 0) {
+      if (['queued','resolving','saving','downloading','uploading'].includes(job.status)) {
+        acts += ` <button type="button" class="secondary" onclick="controlJob('pause')">暫停</button>`;
         acts += ` <button type="button" class="secondary danger" onclick="cancelJob()">取消</button>`;
       }
+      if (job.status === 'paused') acts += ` <button onclick="controlJob('resume')">繼續</button>`;
+      acts += ` <button class="secondary danger" onclick="controlJob('delete')">刪除任務</button>`;
       ja.innerHTML = acts;
       const isLocal = dest === 'local';
       const videoExt = /\.(mp4|mkv|webm|mov|m4v|avi|ts|m2ts|flv|wmv|mpg|mpeg|3gp|rmvb|rm|hevc|h265)$/i;
@@ -89,7 +105,7 @@
       document.getElementById('files').innerHTML = (files||[]).map(f => {
         let op = '';
         const name = f.relative_path||f.remote_name||'';
-        if (videoExt.test(name)) {
+        if (videoExt.test(name) && f.status === 'done' && dest !== 'google') {
           const playLabel = browserNativeExt.test(name) ? '▶ 網頁試播' : '▶ 播放選項';
           op += `<a class="btn secondary" style="margin:2px" href="/play/${jobId}/${f.id}">${playLabel}</a>`;
           op += `<a class="btn" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/open/infuse">Infuse</a>`;
@@ -97,13 +113,14 @@
           op += `<a class="btn secondary" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/open/potplayer">PotPlayer</a>`;
         }
         if (f.status === 'done') {
+          if (videoExt.test(name) && dest === 'google') op += `<button class="secondary" onclick="googlePlayback()">Infuse／VLC 播放說明</button>`;
           op += `<button type="button" class="secondary" style="margin:2px" onclick="openLocation(${jobId},${f.id})">在雲端顯示</button>`;
           if (isLocal) {
             op += `<a class="btn secondary" style="margin:2px" href="/api/tasks/${jobId}/files/${f.id}/download">下載</a>`;
           }
         }
         return `<tr>
-          <td>${esc(name)}<div class="muted">${esc(f.pcloud_path||'')}</div>
+          <td>${job.status==='awaiting_selection'?`<input type="checkbox" data-file-id="${f.id}" ${selectedIds.has(f.id)?'checked':''} onchange="toggleFile(${f.id},this.checked)" />`:''}${esc(name)}<div class="muted">${esc(f.pcloud_path||'')}</div>
             ${f.error_message?`<div class="err">${esc(f.error_message)}</div>`:''}</td>
           <td>${fmt(f.size)}</td>
           <td>${fmt(f.downloaded_bytes)}${(f.status==='downloading'||f.status==='uploading')&&f.size?` <span class="muted">(${Math.min(100,(100*(f.downloaded_bytes||0)/f.size)).toFixed(1)}%)</span>`:''}</td>
@@ -112,7 +129,16 @@
           <td>${op}</td>
         </tr>`;
       }).join('') || '<tr><td colspan="6" class="muted">解析中或尚無檔案…</td></tr>';
+      filterFiles();
     }
+    function googlePlayback(){alert('Infuse：在新增共享中連接 Google Drive，開啟對應的 PanBridge 資料夾。\nVLC（Windows/Mac）：安裝 Google Drive 電腦版，使用串流模式，在 Drive 資料夾中用 VLC 開啟此文件。\nGoogle 私人文件需要登入；本站不會把 token 放进播放網址，也不會公開你的文件。');}
+    function toggleFile(id, checked){if(checked) selectedIds.add(id); else selectedIds.delete(id); selectionSummary();}
+    function selectionSummary(){const chosen=currentFiles.filter(f=>selectedIds.has(f.id)); document.getElementById('selection-summary').textContent='已選 '+chosen.length+' 個文件 · '+fmt(chosen.reduce((n,f)=>n+Number(f.size||0),0));}
+    function filterFiles(){const q=document.getElementById('filter-files').value.toLowerCase(); document.querySelectorAll('#files tr').forEach((row,i)=>{const f=currentFiles[i]; row.hidden=currentStatus==='awaiting_selection' && f && !(f.relative_path||f.remote_name||'').toLowerCase().includes(q);}); selectionSummary();}
+    function selectVisible(checked){document.querySelectorAll('#files tr:not([hidden]) input[data-file-id]').forEach(el=>{el.checked=checked; toggleFile(Number(el.dataset.fileId),checked);});}
+    async function confirmSelection(){if(!selectedIds.size){alert('請至少選一個文件');return;} const r=await fetch('/api/tasks/'+jobId+'/selection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_ids:[...selectedIds]})});const d=await r.json().catch(()=>({}));if(!r.ok){alert(d.detail||'選檔失敗');return;} await load();}
+    async function controlJob(action){if(action==='delete'&&!confirm('移除任務並停止搬運？雲端文件不刪除，未完成暫存先保留。'))return; const r=await fetch('/api/tasks/'+jobId+(action==='delete'?'':'/'+action),{method:action==='delete'?'DELETE':'POST'});const d=await r.json().catch(()=>({}));if(!r.ok){alert(d.detail||'操作失敗');return;}if(action==='delete'){location.href='/';return;}await load();}
+    async function copyToGoogle(){if(!confirm('保留原任務，另建 Google Drive 任務並先讓你選檔？'))return;const r=await fetch('/api/tasks/'+jobId+'/copy-to-google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({select_files:true})});const d=await r.json().catch(()=>({}));if(!r.ok){alert(d.detail||'建立失敗');return;}location.href='/tasks/'+d.job_id;}
     window.retryJob = async function(){
       const r = await fetch('/api/tasks/'+jobId+'/retry', {method:'POST'});
       const d = await r.json().catch(()=>({}));
@@ -121,8 +147,7 @@
     };
     window.cancelJob = async function(){
       if (!confirm('確定取消此任務？')) return;
-      await fetch('/api/tasks/'+jobId+'/cancel', {method:'POST'});
-      load();
+      await controlJob('cancel');
     };
     load(); setInterval(load, 2000);
   </script>

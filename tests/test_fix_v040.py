@@ -1734,7 +1734,7 @@ async def test_player_links_and_task_ui_offer_direct_infuse_and_windows_buttons(
     assert "/open/infuse" in task_html
     assert "/open/vlc" in task_html
     assert "/open/potplayer" in task_html
-    assert "v0.4.5 · OneDrive 安全命名" in task_html
+    assert "暫停" in task_html and "選檔" in task_html and "copyToGoogle" in task_html
     await db.close()
 
 

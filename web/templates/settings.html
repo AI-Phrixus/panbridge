@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Settings · PanBridge</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.5" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.0" />
 </head>
 <body>
   <div class="wrap">
@@ -19,6 +19,20 @@
     <div class="card">
       <h2>已連接帳號</h2>
       <div id="providers" class="muted">載入中…</div>
+    </div>
+
+    <div class="card stack">
+      <h2>Google Drive／Google One</h2>
+      <p class="muted">只授權 PanBridge 建立或處理的文件，不要求整個雲盤的存取權。文件維持私人，不公開分享。憑證加密保存在伺服器。<a href="/privacy" target="_blank" rel="noopener">閱讀隱私與資料使用說明</a></p>
+      <p id="google-status" class="muted">載入 Google 連線狀態…</p>
+      <div class="actions"><button id="google-connect">連接 Google Drive</button><button id="google-clear" class="secondary">斷開 Google Drive</button></div>
+      <details><summary>首次設定 OAuth 用戶端（只需一次）</summary>
+        <p class="muted">Google Cloud 請建立「網頁應用程式」，回呼網址：<code>https://panbridge.tdtc.indevs.in/api/auth/google/callback</code>。外部應用請完成正式發布，避免測試模式的續期憑證只有七天。</p>
+        <label>Client ID</label><input id="google-client" autocomplete="off" />
+        <label>Client Secret</label><input id="google-secret" type="password" autocomplete="off" />
+        <button id="google-save" class="secondary">加密保存用戶端設定</button>
+      </details>
+      <p id="google-msg"></p>
     </div>
 
     <div class="card stack">
@@ -106,6 +120,11 @@
     </div>
   </div>
   <script>
+    async function googleStatus(){const r=await fetch('/api/auth/google/status');if(!r.ok)return;const d=await r.json();document.getElementById('google-status').textContent=d.connected?'Google Drive 已連接':d.configured?'OAuth 已配置；請連接並選擇正確的 Google One 帳號':'等待首次 OAuth 配置';}
+    document.getElementById('google-save').onclick=async()=>{const r=await fetch('/api/auth/google/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:document.getElementById('google-client').value.trim(),client_secret:document.getElementById('google-secret').value.trim()})});const d=await r.json().catch(()=>({}));document.getElementById('google-msg').textContent=r.ok?'用戶端已加密保存':typeof d.detail==='string'?d.detail:'設定不完整，請檢查用戶端資訊';if(r.ok)document.getElementById('google-secret').value='';googleStatus();};
+    document.getElementById('google-connect').onclick=async()=>{const r=await fetch('/api/auth/google/start',{method:'POST'});const d=await r.json().catch(()=>({}));if(!r.ok){document.getElementById('google-msg').textContent=d.detail||'無法開始授權';return;}location.href=d.url;};
+    document.getElementById('google-clear').onclick=async()=>{if(!confirm('停止本站使用 Google Drive？雲端文件不會刪除。'))return;await fetch('/api/auth/google',{method:'DELETE'});googleStatus();};
+    googleStatus();
     const $ = s => document.querySelector(s);
     async function refreshProviders(){
       const r = await fetch('/api/auth/me');

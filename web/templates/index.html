@@ -4,12 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PanBridge</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.4.5" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.0" />
 </head>
 <body>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span> <span class="muted" style="font-size:.75rem;font-weight:500" id="appver">v0.4.5 · OneDrive 安全命名與可靠上傳</span></div>
+      <div class="logo">Pan<span>Bridge</span> <span class="muted" style="font-size:.75rem;font-weight:500" id="appver">Google Drive · 可選檔與暫停</span></div>
       <nav>
         <a href="/">任務</a>
         <a href="/settings">帳號設定</a>
@@ -32,19 +32,21 @@
           <input id="pwd" placeholder="若連結內已有可留空" />
         </div>
         <div>
-          <label>pCloud 目標路徑前綴</label>
+          <label>雲端目標路徑前綴</label>
           <input id="path" placeholder="/PanBridge" value="/PanBridge" />
         </div>
       </div>
       <label>存放目標（大文件必看）</label>
       <select id="dest">
-        <option value="auto" selected>自動：優先 OneDrive（大容量）/ pCloud 夠用才用 / 否則暫存</option>
-        <option value="onedrive">強制：OneDrive（微軟雲盤 5T，推薦大文件）</option>
+        <option value="google" selected>Google Drive（使用已授權的 Google One 空間）</option>
+        <option value="auto">自動：已連接 Google Drive 優先／其他可用目標</option>
+        <option value="onedrive">OneDrive（僅帳號服務仍可用時）</option>
         <option value="pcloud">強制：pCloud（免費空間小，大文件會失敗）</option>
         <option value="local">強制：服務器暫存（僅自己下載，注意條款與磁盤）</option>
       </select>
       <p class="muted">OneDrive 不接受的檔名字元會自動換成容易辨認的全形字元，並加上短識別碼避免同名覆蓋；PanBridge 仍保留原始檔名供你辨識。</p>
-      <p class="muted" style="margin-top:8px">大文件請選 OneDrive。pCloud 免費約 4GB；VPS 暫存有條款與磁盤限制。</p>
+      <p class="muted" style="margin-top:8px">Google One 空間透過 Google Drive 使用。目標未連接時不會偷偷改存其他網盤。</p>
+      <label><input type="checkbox" id="select-files" checked /> 先列出文件讓我選擇，再開始下載</label>
       <div class="actions">
         <button id="submit">開始後台搬運</button>
       </div>
@@ -111,6 +113,7 @@
             od + pc +
             ' · 併發 ' + (s.max_concurrent_jobs ?? '?') +
             ' · 帳號 OD' + ok(p.onedrive) +
+            ' Google' + ok(p.google) +
             ' PC' + ok(p.pcloud) +
             ' 夸克' + ok(p.quark) +
             ' 百度' + ok(p.baidu);
@@ -159,9 +162,13 @@
           if (j.status === 'done' || j.progress > 0) {
             actions += '<button class="secondary" onclick="openJobFolder(' + j.id + ')">雲端位置</button> ';
           }
-          if (['done', 'cancelled', 'failed'].indexOf(j.status) < 0) {
+          if (['queued','resolving','saving','downloading','uploading'].includes(j.status)) {
+            actions += '<button class="secondary" onclick="control(' + j.id + ',\'pause\')">暫停</button> ';
             actions += '<button class="secondary danger" onclick="cancel(' + j.id + ')">取消</button>';
           }
+          if (j.status === 'paused') actions += '<button onclick="control(' + j.id + ',\'resume\')">繼續</button> ';
+          if (j.status === 'awaiting_selection') actions += '<a class="btn" href="/tasks/' + j.id + '">選擇文件</a> ';
+          actions += '<button class="secondary danger" onclick="control(' + j.id + ',\'delete\')">刪除任務</button>';
           return (
             '<tr>' +
             '<td><a href="/tasks/' + j.id + '">#' + j.id + '</a></td>' +
@@ -182,7 +189,13 @@
     }
 
     window.retry = async function (id) {
-      await fetch('/api/tasks/' + id + '/retry', { method: 'POST' });
+      await control(id, 'retry');
+    };
+    window.control = async function(id, action) {
+      if (action === 'delete' && !confirm('移除此任務並停止搬運？雲端文件不會刪除，未完成暫存先保留。')) return;
+      const r = await fetch('/api/tasks/' + id + (action === 'delete' ? '' : '/' + action), {method: action === 'delete' ? 'DELETE' : 'POST'});
+      const d = await r.json().catch(()=>({}));
+      if (!r.ok) { alert(d.detail || '操作失敗'); return; }
       loadJobs();
     };
     window.openJobFolder = async function (id) {
@@ -195,8 +208,7 @@
       } catch (e) { alert(String(e)); }
     };
     window.cancel = async function (id) {
-      await fetch('/api/tasks/' + id + '/cancel', { method: 'POST' });
-      loadJobs();
+      await control(id, 'cancel');
     };
 
     $('#logout').onclick = async function (e) {
@@ -216,7 +228,8 @@
           text: text,
           passcode: $('#pwd').value,
           pcloud_path: $('#path').value,
-          destination: ($('#dest') && $('#dest').value) || 'auto'
+          destination: ($('#dest') && $('#dest').value) || 'google',
+          select_files: $('#select-files').checked
         })
       });
       const data = await r.json().catch(function () { return {}; });

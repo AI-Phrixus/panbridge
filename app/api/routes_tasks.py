@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import asyncio
 import shutil
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import require_auth
 from app.auth.onedrive_session import make_onedrive_sink
+from app.auth.google_session import make_google_sink, google_credential
 from app.config import get_settings
 from app.db import db
 from app.security import decrypt_json
@@ -18,6 +20,11 @@ from app.sinks.pcloud import PCloudSink
 from app.transfer.disk import free_bytes
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+_control_locks: dict[int, asyncio.Lock] = {}
+
+
+def _control_lock(job_id: int) -> asyncio.Lock:
+    return _control_locks.setdefault(job_id, asyncio.Lock())
 
 
 class CreateTaskIn(BaseModel):
@@ -25,6 +32,15 @@ class CreateTaskIn(BaseModel):
     passcode: str = ""
     pcloud_path: str = ""
     destination: str = "auto"  # auto | pcloud | local
+    select_files: bool = False
+
+
+class SelectionIn(BaseModel):
+    file_ids: list[int] = Field(..., min_length=1, max_length=100000)
+
+
+class CopyTaskIn(BaseModel):
+    select_files: bool = True
 
 
 @router.get("/system/status")
@@ -35,6 +51,12 @@ async def system_status(_: None = Depends(require_auth)):
     providers = {p["provider"] for p in await db.list_credential_providers()}
     pcloud_space = None
     onedrive_space = None
+    google_space = None
+    try:
+        if "google" in providers:
+            google_space = await (await make_google_sink(db)).space_info()
+    except Exception:
+        pass
     try:
         enc = await db.get_credential("pcloud")
         if enc:
@@ -62,12 +84,15 @@ async def system_status(_: None = Depends(require_auth)):
             "quark": "quark" in providers,
             "baidu": "baidu" in providers,
             "onedrive": "onedrive" in providers,
+            "google": "google" in providers,
         },
         "pcloud_free_gb": round((pcloud_space or {}).get("free", 0) / 1024 / 1024 / 1024, 2) if pcloud_space else None,
         "pcloud_used_gb": round((pcloud_space or {}).get("used", 0) / 1024 / 1024 / 1024, 2) if pcloud_space else None,
         "pcloud_quota_gb": round((pcloud_space or {}).get("quota", 0) / 1024 / 1024 / 1024, 2) if pcloud_space else None,
         "onedrive_free_gb": round((onedrive_space or {}).get("free", 0) / 1024 / 1024 / 1024, 2) if onedrive_space else None,
         "onedrive_quota_gb": round((onedrive_space or {}).get("quota", 0) / 1024 / 1024 / 1024, 2) if onedrive_space else None,
+        "google_free_gb": round(google_space["free"] / 1024 ** 3, 2) if google_space and google_space["free"] is not None else None,
+        "google_email": (google_space or {}).get("email"),
     }
 
 
@@ -92,7 +117,7 @@ async def list_tasks(_: None = Depends(require_auth)):
 @router.get("/{job_id}")
 async def get_task(job_id: int, _: None = Depends(require_auth)):
     job = await db.get_job(job_id)
-    if not job:
+    if not job or job["status"] == "deleted":
         raise HTTPException(404, "not found")
     files = await db.list_files(job_id)
     st = job.get("status") or ""
@@ -103,7 +128,7 @@ async def get_task(job_id: int, _: None = Depends(require_auth)):
             job["progress"] = prog
             counts = await db.file_status_counts(job_id)
             job["files_done"] = int(counts.get("done") or 0)
-            job["files_total"] = sum(counts.values())
+            job["files_total"] = sum(value for key, value in counts.items() if key != "skipped")
         except Exception:
             pass
     return {"job": job, "files": files}
@@ -166,8 +191,10 @@ async def download_local_file(job_id: int, file_id: int, _: None = Depends(requi
 async def create_tasks(body: CreateTaskIn, _: None = Depends(require_auth)):
     settings = get_settings()
     dest = (body.destination or "auto").lower()
-    if dest not in ("auto", "pcloud", "local", "onedrive"):
-        raise HTTPException(400, "destination must be auto|pcloud|local|onedrive")
+    if dest not in ("auto", "pcloud", "local", "onedrive", "google"):
+        raise HTTPException(400, "destination must be auto|pcloud|local|onedrive|google")
+    if dest == "google" and not await db.get_credential("google"):
+        raise HTTPException(400, "Google Drive 未連接，請到帳號設定授權")
     if dest == "pcloud" and not await db.get_credential("pcloud"):
         raise HTTPException(400, "pCloud 未配置，請到設定頁連接")
     if dest == "onedrive" and not await db.get_credential("onedrive"):
@@ -195,6 +222,11 @@ async def create_tasks(body: CreateTaskIn, _: None = Depends(require_auth)):
     if not parsed_list:
         raise HTTPException(400, "未解析到有效連結（僅支援夸克 / 百度）")
 
+    target_account_id = ""
+    if dest == "google" or (dest == "auto" and await db.get_credential("google")):
+        credential = await google_credential(db)
+        target_account_id = credential["account_id"]
+        dest = "google"
     created = []
     for p in parsed_list:
         if body.passcode and not p.passcode:
@@ -208,6 +240,8 @@ async def create_tasks(body: CreateTaskIn, _: None = Depends(require_auth)):
             passcode=p.passcode,
             pcloud_path=path,
             destination=dest,
+            select_files=body.select_files,
+            target_account_id=target_account_id,
         )
         created.append(jid)
     return {"ok": True, "job_ids": created, "destination": dest}
@@ -215,9 +249,16 @@ async def create_tasks(body: CreateTaskIn, _: None = Depends(require_auth)):
 
 @router.post("/{job_id}/retry")
 async def retry_task(job_id: int, request: Request, _: None = Depends(require_auth)):
+    async with _control_lock(job_id):
+        return await _retry_task(job_id, request)
+
+
+async def _retry_task(job_id: int, request: Request):
     job = await db.get_job(job_id)
-    if not job:
+    if not job or job["status"] == "deleted":
         raise HTTPException(404, "not found")
+    if job["status"] in ("paused", "awaiting_selection"):
+        raise HTTPException(409, "請使用繼續或確認選檔，不要重試")
     # Don't steal a job that is actively owned by the worker
     worker = getattr(request.app.state, "worker", None)
     running = set(getattr(worker, "_running_jobs", set()) or set()) if worker else set()
@@ -245,17 +286,100 @@ async def retry_task(job_id: int, request: Request, _: None = Depends(require_au
 
 @router.post("/{job_id}/cancel")
 async def cancel_task(job_id: int, request: Request, _: None = Depends(require_auth)):
-    job = await db.get_job(job_id)
-    if not job:
-        raise HTTPException(404, "not found")
-    await db.update_job(job_id, status="cancelled", status_detail="已取消", speed_bps=0)
-    # ADV-R5: mid-flight file rows left as downloading block clean retry semantics
-    files = await db.list_files(job_id)
-    for f in files:
-        if f.get("status") in ("downloading", "uploading"):
-            await db.update_file(f["id"], status="queued", error_message="")
-    # BUG-11: also cancel in-flight asyncio task (upload/download)
-    worker = getattr(request.app.state, "worker", None)
-    if worker is not None and hasattr(worker, "request_cancel"):
-        worker.request_cancel(job_id)
+    async with _control_lock(job_id):
+        await _stop_task(job_id, request, "cancelled", "已取消；進度已保留")
     return {"ok": True}
+
+
+async def _stop_task(job_id: int, request: Request, status: str, detail: str):
+    job = await db.get_job(job_id)
+    if not job or job["status"] == "deleted":
+        raise HTTPException(404, "not found")
+    if job["status"] == "done" and status != "deleted":
+        raise HTTPException(409, "任務已完成")
+    await db.update_job(job_id, status=status, speed_bps=0)
+    worker = getattr(request.app.state, "worker", None)
+    if worker:
+        await worker.interrupt_job(job_id)
+    # A cancelled resolve can leave only part of the listing; never resume it.
+    if job["status"] in ("resolving", "saving"):
+        await db.clear_files(job_id)
+    else:
+        for f in await db.list_files(job_id):
+            if f["status"] in ("downloading", "uploading"):
+                await db.update_file(f["id"], status="queued", error_message="")
+    await db.recompute_job_progress(job_id)
+    await db.update_job(job_id, status=status, status_detail=detail, speed_bps=0)
+
+
+@router.post("/{job_id}/pause")
+async def pause_task(job_id: int, request: Request, _: None = Depends(require_auth)):
+    async with _control_lock(job_id):
+        job = await db.get_job(job_id)
+        if job and job["status"] == "awaiting_selection":
+            raise HTTPException(409, "任務已停止，正在等待選檔")
+        await _stop_task(job_id, request, "paused", "已暫停；繼續時從已驗證進度恢復")
+    return {"ok": True}
+
+
+@router.post("/{job_id}/resume")
+async def resume_task(job_id: int, _: None = Depends(require_auth)):
+    async with _control_lock(job_id):
+        job = await db.get_job(job_id)
+        if not job or job["status"] == "deleted":
+            raise HTTPException(404, "not found")
+        if job["status"] != "paused":
+            raise HTTPException(409, "只有暫停的任務可以繼續")
+        for f in await db.list_files(job_id):
+            if f["status"] == "failed":
+                await db.update_file(f["id"], status="queued", error_message="")
+        await db.update_job(job_id, status="queued", error_message="", status_detail="等待繼續…")
+    return {"ok": True}
+
+
+@router.post("/{job_id}/selection")
+async def select_task_files(job_id: int, body: SelectionIn, _: None = Depends(require_auth)):
+    async with _control_lock(job_id):
+        job = await db.get_job(job_id)
+        if not job or job["status"] == "deleted":
+            raise HTTPException(404, "not found")
+        if job["status"] != "awaiting_selection":
+            raise HTTPException(409, "任務不是等待選檔狀態")
+        files = await db.list_files(job_id)
+        chosen = set(body.file_ids)
+        if not chosen.issubset({f["id"] for f in files}):
+            raise HTTPException(400, "選擇包含不屬於此任務的文件")
+        for f in files:
+            await db.update_file(f["id"], status="queued" if f["id"] in chosen else "skipped")
+        await db.recompute_job_progress(job_id)
+        await db.update_job(job_id, select_files=0, status="queued", status_detail=f"已選 {len(chosen)} 個文件；等待搬運")
+    return {"ok": True, "selected": len(chosen)}
+
+
+@router.delete("/{job_id}")
+async def delete_task(job_id: int, request: Request, _: None = Depends(require_auth)):
+    """Soft-delete the task only; delivered cloud files and checkpoints survive."""
+    async with _control_lock(job_id):
+        await _stop_task(job_id, request, "deleted", "已從任務列表移除；雲端文件未刪除")
+    return {"ok": True, "cloud_files_deleted": False}
+
+
+@router.post("/{job_id}/copy-to-google")
+async def copy_task_to_google(job_id: int, body: CopyTaskIn, _: None = Depends(require_auth)):
+    async with _control_lock(job_id):
+        original = await db.get_job(job_id)
+        if not original or original["status"] == "deleted":
+            raise HTTPException(404, "not found")
+        if not await db.get_credential("google"):
+            raise HTTPException(400, "請先連接 Google Drive")
+        if not await db.get_credential(original["source_type"]):
+            raise HTTPException(400, "來源帳號未連接")
+        credential = await google_credential(db)
+        copied = await db.create_job(
+            source_type=original["source_type"], share_url=original["share_url"],
+            passcode=original.get("passcode") or "", title=original.get("title") or "",
+            pcloud_path=original.get("pcloud_path") or "/PanBridge",
+            destination="google", select_files=body.select_files,
+            target_account_id=credential["account_id"],
+        )
+    return {"ok": True, "job_id": copied, "original_job_id": job_id}

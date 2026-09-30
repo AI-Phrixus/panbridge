@@ -14,6 +14,7 @@ from app.api.routes_auth import router as auth_router
 from app.api.routes_tasks import router as tasks_router
 from app.api.routes_stream import router as stream_router
 from app.api.routes_location import router as location_router
+from app.api.routes_google import router as google_router
 from app.config import get_settings, normalize_public_base_url, validate_runtime_security
 from app.db import db
 from app.security import verify_session_token
@@ -23,6 +24,19 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("panbridge")
+
+
+class _OAuthLogRedaction(logging.Filter):
+    def filter(self, record):
+        if isinstance(record.args, tuple) and len(record.args) == 5:
+            args = list(record.args)
+            if str(args[2]).split("?", 1)[0] == "/api/auth/google/callback":
+                args[2] = "/api/auth/google/callback"
+                record.args = tuple(args)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_OAuthLogRedaction())
 
 BASE = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE / "web" / "templates"))
@@ -43,7 +57,7 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 
-app = FastAPI(title="PanBridge", version="0.4.5", lifespan=lifespan)
+app = FastAPI(title="PanBridge", version="0.5.0", lifespan=lifespan)
 app.state.worker = worker
 
 
@@ -91,10 +105,16 @@ app.include_router(auth_router)
 app.include_router(tasks_router)
 app.include_router(stream_router)
 app.include_router(location_router)
+app.include_router(google_router)
 
 static_dir = BASE / "web" / "static"
 static_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_page(request: Request):
+    return templates.TemplateResponse("privacy.html", {"request": request})
 
 
 def _logged_in(request: Request) -> bool:
