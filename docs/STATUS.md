@@ -1,5 +1,15 @@
 # 生產狀態快照（可公開）
 
+## 2026-09-30 增量更新
+
+- GitHub main 已發布下載連線池修復 `f7a5ff8`；Oracle 已更新同一 downloader 檔案，SHA-256 `18160c6b07e008f6fd04e8984f1d60250f0a4746c03faf20effe049af8c3b15b`。
+- 此為 v0.4.5 的下載器熱修復，健康端點版本仍為 `0.4.5`；不是 Google Drive 或新 UI 發布。
+- 本機與乾淨發布快照均 150 tests 通過；包含 HTTP/1.1 真實 TCP 測試（10 次請求、1 條連線）。紅藍軍復審通過，舊 Cookie 污染已修正。尚無外部 CDN 速度倍率證據。
+- 部署前任務：9 done、4 failed、1 cancelled，沒有進行中的下載。沒有自動重試舊 OneDrive 任務或刪除任何雲端文件。
+- 備份：`/home/ubuntu/panbridge-backups/20260930-pool-f7a5ff8/downloader.py`；未變更資料庫、凭證或儲存目標。
+- 原 OneDrive 租戶服務失效；先前完成狀態只代表當時交付成功，不保證目前仍能訪問。Google Drive 適配、#13/#14 重新搬運、暫停／選檔／刪除仍未發布。
+- 詳見 [開源傳輸設計評估](OPEN_SOURCE_TRANSFER_REVIEW.md)。下列 2026-08-26 表格保留為歷史紀錄，不是最新雲盤可用性證明。
+
 > 無密鑰。具體口令／secret 只在 VPS `.env`，不上 GitHub。
 > **最後核對**：2026-08-26（Asia/Tokyo）
 > GitHub `main` 與 Oracle 生產均為 **v0.4.5**；實際版本永遠以 `/api/health` 為準。
