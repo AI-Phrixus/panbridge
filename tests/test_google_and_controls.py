@@ -359,3 +359,15 @@ async def test_google_parallel_sinks_create_shared_folder_only_once():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         result = await asyncio.gather(first.ensure_folder(client, "/PanBridge"), second.ensure_folder(client, "/PanBridge"))
     assert result == ["folder", "folder"] and creates == 1
+
+
+def test_google_copy_confirmation_does_not_block_browser_dialogs():
+    from pathlib import Path
+    template = (Path(__file__).resolve().parents[1] / "web/templates/task.html").read_text()
+    copy_handler = template.split("async function copyToGoogle(){", 1)[1].split("window.retryJob", 1)[0]
+    assert "confirm(" not in copy_handler and "alert(" not in copy_handler
+    assert 'id="google-copy-confirm" hidden' in template
+    assert 'id="google-copy-submit" onclick="copyToGoogle()"' in template
+    assert "select_files:true" in copy_handler
+    assert "if(copyingToGoogle)return" in copy_handler
+    assert "disabled=true" in copy_handler and "disabled=false" in copy_handler

@@ -19,6 +19,11 @@
       <h2>任務 #<span id="jid">{{ job_id }}</span></h2>
       <div id="meta" class="muted"></div>
       <div class="actions" id="jobActions"></div>
+      <section id="google-copy-confirm" hidden aria-label="重新搬運確認">
+        <p>保留原任務，建立或開啟 Google Drive 任務。只會先列出文件，等你選檔後才開始下載。</p>
+        <button type="button" id="google-copy-submit" onclick="copyToGoogle()">確認建立選檔任務</button>
+        <button type="button" class="secondary" onclick="document.getElementById('google-copy-confirm').hidden=true">返回</button>
+      </section>
       <div id="err" class="err"></div>
     </div>
     <div class="card">
@@ -89,7 +94,7 @@
       document.getElementById('err').textContent = retiredTarget ? '' : job.error_message||'';
       const ja = document.getElementById('jobActions');
       let acts = retiredTarget ? '' : `<button type="button" class="secondary" onclick="openJobFolder()">在雲端開啟此任務資料夾</button>`;
-      if (dest !== 'google') acts += ` <button onclick="copyToGoogle()">重新搬運到 Google Drive</button>`;
+      if (dest !== 'google') acts += ` <button onclick="document.getElementById('google-copy-confirm').hidden=false">重新搬運到 Google Drive</button>`;
       if (!retiredTarget && (job.status === 'failed' || job.status === 'cancelled')) {
         acts += ` <button type="button" class="secondary" onclick="retryJob()">重試</button>`;
       }
@@ -143,14 +148,14 @@
     async function copyToGoogle(){
       if(copyingToGoogle)return;
       copyingToGoogle=true;
+      document.getElementById('google-copy-submit').disabled=true;
       try{
-        if(!confirm('保留原任務，建立或開啟 Google Drive 任務並先讓你選檔？'))return;
         const r=await fetch('/api/tasks/'+jobId+'/copy-to-google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({select_files:true})});
         const d=await r.json().catch(()=>({}));
-        if(!r.ok){alert(d.detail||'建立失敗');return;}
+        if(!r.ok){document.getElementById('err').textContent=d.detail||'建立失敗';return;}
         location.href='/tasks/'+d.job_id;
-      }catch(e){alert('連線中斷，請再試；已建立的任務會被復用。');}
-      finally{copyingToGoogle=false;}
+      }catch(e){document.getElementById('err').textContent='連線中斷，請再試；已建立的任務會被復用。';}
+      finally{copyingToGoogle=false;document.getElementById('google-copy-submit').disabled=false;}
     }
     window.retryJob = async function(){
       const r = await fetch('/api/tasks/'+jobId+'/retry', {method:'POST'});
