@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 
-app = FastAPI(title="PanBridge", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="PanBridge", version="0.5.1", lifespan=lifespan)
 app.state.worker = worker
 
 

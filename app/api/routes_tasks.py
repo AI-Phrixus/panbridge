@@ -10,7 +10,6 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.api.deps import require_auth
-from app.auth.onedrive_session import make_onedrive_sink
 from app.auth.google_session import make_google_sink, google_credential
 from app.config import get_settings
 from app.db import db
@@ -50,7 +49,6 @@ async def system_status(_: None = Depends(require_auth)):
     total = shutil.disk_usage(s.tmp_path).total
     providers = {p["provider"] for p in await db.list_credential_providers()}
     pcloud_space = None
-    onedrive_space = None
     google_space = None
     try:
         if "google" in providers:
@@ -65,13 +63,6 @@ async def system_status(_: None = Depends(require_auth)):
             pcloud_space = await sink.space_info()
     except Exception:
         pcloud_space = None
-    try:
-        enc = await db.get_credential("onedrive")
-        if enc:
-            od = await make_onedrive_sink(db)
-            onedrive_space = await od.space_info()
-    except Exception:
-        onedrive_space = None
     return {
         "version": s.app_version,
         "disk_free": free,
@@ -83,14 +74,11 @@ async def system_status(_: None = Depends(require_auth)):
             "pcloud": "pcloud" in providers,
             "quark": "quark" in providers,
             "baidu": "baidu" in providers,
-            "onedrive": "onedrive" in providers,
             "google": "google" in providers,
         },
         "pcloud_free_gb": round((pcloud_space or {}).get("free", 0) / 1024 / 1024 / 1024, 2) if pcloud_space else None,
         "pcloud_used_gb": round((pcloud_space or {}).get("used", 0) / 1024 / 1024 / 1024, 2) if pcloud_space else None,
         "pcloud_quota_gb": round((pcloud_space or {}).get("quota", 0) / 1024 / 1024 / 1024, 2) if pcloud_space else None,
-        "onedrive_free_gb": round((onedrive_space or {}).get("free", 0) / 1024 / 1024 / 1024, 2) if onedrive_space else None,
-        "onedrive_quota_gb": round((onedrive_space or {}).get("quota", 0) / 1024 / 1024 / 1024, 2) if onedrive_space else None,
         "google_free_gb": round(google_space["free"] / 1024 ** 3, 2) if google_space and google_space["free"] is not None else None,
         "google_email": (google_space or {}).get("email"),
     }

@@ -40,11 +40,9 @@
       <select id="dest">
         <option value="google" selected>Google Drive（使用已授權的 Google One 空間）</option>
         <option value="auto">自動：已連接 Google Drive 優先／其他可用目標</option>
-        <option value="onedrive">OneDrive（僅帳號服務仍可用時）</option>
         <option value="pcloud">強制：pCloud（免費空間小，大文件會失敗）</option>
         <option value="local">強制：服務器暫存（僅自己下載，注意條款與磁盤）</option>
       </select>
-      <p class="muted">OneDrive 不接受的檔名字元會自動換成容易辨認的全形字元，並加上短識別碼避免同名覆蓋；PanBridge 仍保留原始檔名供你辨識。</p>
       <p class="muted" style="margin-top:8px">Google One 空間透過 Google Drive 使用。目標未連接時不會偷偷改存其他網盤。</p>
       <label><input type="checkbox" id="select-files" checked /> 先列出文件讓我選擇，再開始下載</label>
       <div class="actions">
@@ -104,16 +102,12 @@
           const pc = (s.pcloud_free_gb != null)
             ? (' · pCloud <b>' + s.pcloud_free_gb + 'G</b>')
             : '';
-          const od = (s.onedrive_free_gb != null)
-            ? (' · OneDrive <b>' + s.onedrive_free_gb + 'G</b>/' + (s.onedrive_quota_gb ?? '?') + 'G')
-            : '';
           el.innerHTML =
             'v' + (s.version || '?') +
             ' · 磁盤 <b>' + (s.disk_free_gb ?? '?') + 'G</b>' +
-            od + pc +
+            pc +
             ' · 併發 ' + (s.max_concurrent_jobs ?? '?') +
-            ' · 帳號 OD' + ok(p.onedrive) +
-            ' Google' + ok(p.google) +
+            ' · 帳號 Google' + ok(p.google) +
             ' PC' + ok(p.pcloud) +
             ' 夸克' + ok(p.quark) +
             ' 百度' + ok(p.baidu);
@@ -144,22 +138,23 @@
           return;
         }
         tb.innerHTML = jobs.map(j => {
+          const retiredTarget = j.destination === 'onedrive';
           const spd = fmtSpeed(j.speed_bps);
           const prog = Number(j.progress) || 0;
           // status_detail already includes speed when downloading; only append if missing
           const hasSpd = /B\/s|KB\/s|MB\/s/.test(j.status_detail || '');
-          const detail = j.status_detail
+          const detail = !retiredTarget && j.status_detail
             ? '<div class="muted" style="font-size:.85rem">' + esc(j.status_detail) +
               (spd && !hasSpd ? ' · ' + esc(spd) : '') + '</div>'
             : (spd ? '<div class="muted" style="font-size:.85rem">' + esc(spd) + '</div>' : '');
-          const err = j.error_message
+          const err = retiredTarget ? '<div class="muted">舊目標已停用；可進入任務重新搬運到 Google Drive。</div>' : j.error_message
             ? '<div class="err">' + esc(j.error_message) + '</div>'
             : '';
           let actions = '';
-          if (j.status === 'failed') {
+          if (j.status === 'failed' && !retiredTarget) {
             actions += '<button class="secondary" onclick="retry(' + j.id + ')">重試</button> ';
           }
-          if (j.status === 'done' || j.progress > 0) {
+          if (!retiredTarget && (j.status === 'done' || j.progress > 0)) {
             actions += '<button class="secondary" onclick="openJobFolder(' + j.id + ')">雲端位置</button> ';
           }
           if (['queued','resolving','saving','downloading','uploading'].includes(j.status)) {
@@ -172,7 +167,7 @@
           return (
             '<tr>' +
             '<td><a href="/tasks/' + j.id + '">#' + j.id + '</a></td>' +
-            '<td>' + esc(j.source_type) + (j.destination ? '<div class="muted" style="font-size:.75rem">' + esc(j.destination) + '</div>' : '') + '</td>' +
+            '<td>' + esc(j.source_type) + (j.destination ? '<div class="muted" style="font-size:.75rem">' + esc(retiredTarget ? '舊目標（已停用）' : j.destination) + '</div>' : '') + '</td>' +
             '<td><div>' + esc(j.title || '') + '</div>' +
             '<div class="muted" style="word-break:break-all;font-size:.8rem">' + esc(j.share_url) + '</div>' +
             detail + err + '</td>' +

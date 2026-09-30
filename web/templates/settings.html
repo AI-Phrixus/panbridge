@@ -73,23 +73,6 @@
 
 
     <div class="card stack">
-      <h2>OneDrive（微軟雲盤 · 推薦大文件）</h2>
-      <p class="muted">使用 Azure 應用程式的「用戶端識別碼」+ 裝置碼登入。適合 5T 大容量，無需公網 HTTPS 回調。</p>
-      <label>應用程式 (用戶端) 識別碼 Client ID</label>
-      <input id="od-client" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="7f83b249-f46b-4641-8e8e-c9e2897d9245" />
-      <div class="actions">
-        <button id="od-start">開始裝置碼登入 OneDrive</button>
-        <button class="secondary" id="od-clear">清除 OneDrive 憑證</button>
-      </div>
-      <div id="od-box" class="card" style="display:none;margin-top:12px;background:var(--bg)">
-        <p>1. 用瀏覽器打開：<a id="od-uri" href="#" target="_blank" rel="noopener"></a></p>
-        <p>2. 輸入代碼：<b id="od-code" style="font-size:1.4rem;letter-spacing:.1em"></b></p>
-        <p class="muted" id="od-msg">等待你在瀏覽器完成登入…</p>
-      </div>
-      <p id="od-status"></p>
-    </div>
-
-    <div class="card stack">
       <h2>夸克網盤</h2>
       <p class="muted">與百度相同：點按鈕 → 手機夸克 App <b>掃畫面上的登錄二維碼</b> → 自動提取 Cookie（無需 F12）。若看到「下載客戶端/升級」字樣請刷新重試。Cookie 過期導致下載 403/412 時也請重新掃碼。</p>
       <div class="actions">
@@ -130,7 +113,7 @@
       const r = await fetch('/api/auth/me');
       if (r.status===401){ location.href='/login'; return; }
       const data = await r.json();
-      const list = data.providers||[];
+      const list = (data.providers||[]).filter(p => !['onedrive','onedrive_app','google_oauth'].includes(p.provider));
       $('#providers').innerHTML = list.length
         ? '<ul>'+list.map(p=>`<li><b>${p.provider}</b> · 更新於 ${p.updated_at}</li>`).join('')+'</ul>'
         : '尚未連接任何帳號';
@@ -229,41 +212,6 @@
       refreshProviders();
     };
 
-
-    let odTimer = null;
-    $('#od-start').onclick = async () => {
-      const client_id = ($('#od-client').value || '').trim();
-      if (!client_id) { $('#od-status').innerHTML = '<span class="err">請填 Client ID</span>'; return; }
-      await fetch('/api/auth/onedrive/client_id', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({client_id})});
-      const r = await fetch('/api/auth/onedrive/device/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({client_id})});
-      const d = await r.json().catch(()=>({}));
-      if (!r.ok) { $('#od-status').innerHTML = '<span class="err">'+(d.detail||'failed')+'</span>'; return; }
-      $('#od-box').style.display = 'block';
-      $('#od-uri').href = d.verification_uri;
-      $('#od-uri').textContent = d.verification_uri;
-      $('#od-code').textContent = d.user_code;
-      $('#od-msg').textContent = d.message || '請完成瀏覽器登入';
-      if (odTimer) clearInterval(odTimer);
-      odTimer = setInterval(async () => {
-        const s = await (await fetch('/api/auth/onedrive/device/'+d.id)).json();
-        $('#od-msg').textContent = (s.message || s.status || '');
-        if (s.status === 'confirmed') {
-          clearInterval(odTimer);
-          $('#od-status').innerHTML = '<span class="ok">OneDrive 已連接</span>';
-          refreshProviders();
-        }
-        if (s.status === 'error' || s.status === 'expired') {
-          clearInterval(odTimer);
-          $('#od-status').innerHTML = '<span class="err">'+(s.message||s.status)+'</span>';
-        }
-      }, 4000);
-    };
-    $('#od-clear').onclick = async () => {
-      await fetch('/api/auth/onedrive', {method:'DELETE'});
-      await fetch('/api/auth/onedrive_app', {method:'DELETE'});
-      refreshProviders();
-      $('#od-status').textContent = '已清除';
-    };
 
     refreshProviders();
   </script>
