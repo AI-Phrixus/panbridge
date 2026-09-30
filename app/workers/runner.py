@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from app.config import get_settings
 from app.db import Database
 from app.security import decrypt_json
@@ -28,6 +30,16 @@ from app.transfer.disk import ensure_space
 from app.transfer.downloader import downloaded_bytes_on_disk, resumable_download
 
 log = logging.getLogger("panbridge.worker")
+
+
+def _error_message(error: Exception) -> str:
+    # HTTPX timeouts often stringify to an empty string. Preserve an actionable
+    # explanation, but never display transport request URLs or auth headers.
+    if isinstance(error, httpx.TimeoutException):
+        return f"網路連線逾時（{type(error).__name__}）；進度已保留，可重試"
+    if isinstance(error, httpx.TransportError):
+        return f"網路連線暫時中斷（{type(error).__name__}）；進度已保留，可重試"
+    return str(error).strip() or f"處理失敗（{type(error).__name__}）；進度已保留，可重試"
 
 
 def _fmt_speed(bps: float) -> str:
@@ -249,7 +261,7 @@ class Worker:
             await self.db.update_job(
                 job_id,
                 status="failed",
-                error_message=str(e)[:2000],
+                error_message=_error_message(e)[:2000],
                 status_detail=(
                     "帳號登入失效 · 請到設定頁重新連接後重試（下載進度已保留）"
                     if _is_auth_error(e)
@@ -396,7 +408,7 @@ class Worker:
                     )
                     return
                 # Cookie/login hard-fail: abort job so user re-auths once (not 1452 times)
-                es = str(e)
+                es = _error_message(e)
                 if _is_auth_error(e):
                     log.error("job %s auth hard-fail: %s", job_id, e)
                     await self.db.update_job(
@@ -413,7 +425,7 @@ class Worker:
                     return
                 # Per-file failure must not abort the whole job (remaining files still process)
                 log.exception("job %s file %s failed", job_id, f.get("id"))
-                file_errors.append(f"{f.get('remote_name')}: {e}")
+                file_errors.append(f"{f.get('remote_name')}: {_error_message(e)}")
             prog = await self.db.recompute_job_progress(job_id)
             snap = await self.db.list_files(job_id)
             snap = [x for x in snap if x["status"] != "skipped"]
@@ -964,7 +976,7 @@ class Worker:
                 await reconcile
             raise
         except Exception as e:
-            msg = str(e)
+            msg = _error_message(e)
             # Parallel slices report in-flight bytes for a responsive UI, but
             # only metadata-marked ranges survive a retry. Reconcile the DB on
             # every abort so a 412/cancel never leaves a misleading percentage.

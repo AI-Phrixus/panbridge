@@ -357,16 +357,38 @@ class QuarkSource:
         headers["user-agent"] = _QUARK_PC_UA
         self._dl_ua = _QUARK_PC_UA
         params = {"pr": "ucpro", "fr": "pc", "sys": "win32", "ve": "2.5.56", "ut": "", "guid": ""}
-        async with httpx.AsyncClient(timeout=60) as client:
+        # This POST only requests links; it does not save/move/delete files.
+        # Retry here, before the CDN downloader exists, without replaying the
+        # mutating control-plane requests handled by _request elsewhere.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
             for attempt in range(3):
-                r = await self._request(
-                    client,
-                    "POST",
-                    "https://drive-pc.quark.cn/1/clouddrive/file/download",
-                    params=params,
-                    json={"fids": fids},
-                    headers=headers,
-                )
+                try:
+                    r = await self._request(
+                        client,
+                        "POST",
+                        "https://drive-pc.quark.cn/1/clouddrive/file/download",
+                        params=params,
+                        json={"fids": fids},
+                        headers=headers,
+                    )
+                except httpx.TransportError:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                if r.status_code in (408, 429, 500, 502, 503, 504):
+                    if attempt == 2:
+                        raise RuntimeError(
+                            f"夸克下載連結服務暫時不可用（HTTP {r.status_code}）；進度已保留，可重試"
+                        )
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                if r.status_code in (401, 403):
+                    raise QuarkAuthenticationError(
+                        f"夸克登入已失效（HTTP {r.status_code}），請重新連接；進度已保留"
+                    )
+                if r.status_code != 200:
+                    raise RuntimeError(f"夸克下載連結請求失敗（HTTP {r.status_code}）")
                 data = r.json()
                 if data.get("code") == 23018:
                     headers["user-agent"] = _QUARK_PC_UA
