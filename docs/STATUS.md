@@ -1,5 +1,13 @@
 # 生產狀態快照（可公開）
 
+## 2026-10-01 本站 DNS 例外與連線層驗收
+
+- 使用者確認後，在既有 Gateway 建立「PanBridge 精確主機名允許」DNS 政策：`dns.fqdn == "panbridge.tdtc.indevs.in"`，Allow、啟用、優先順序 1。沒有放行整個 `indevs.in` 或其他子域名；原兩條安全封鎖規則保持啟用及相對順序，DNSSEC 驗證保持開啟，未更改 WARP／本機 DNS 設定。
+- Gateway DNS 與 Mac 系統解析均已由 0.0.0.0／:: 恢復正常 Cloudflare A／AAAA 位址，WARP 仍 Connected／Network healthy。
+- Mac HTTPS 握手仍中斷（IPv4／HTTP1.1 亦同），內建瀏覽器返回 QUIC 連線錯誤；不能宣稱網站已恢復。Oracle 端公開健康檢查正常。唯讀核對另有已啟用的 network Phishing 封鎖，符合剩餘攔截的可能原因，尚無精確命中日誌。
+- HTTP 控制台明確提示 TLS 解密未開啟，HTTP 政策不作用於 HTTPS；沒有更改 HTTP／TLS 解密。下一步建議僅匹配本站 exact SNI 且目的埠 443 的 Network Allow 例外，須另獲使用者確認；不放行共享 CDN IP，不停用分類封鎖。
+- 09:17 日本時間核對 #16／#18 仍 downloading，84／935 與 195／405 done，進度 8.80%／28.62%；#16 已知單份逾時保留待補傳，Mac 備份未清理。
+
 ## 2026-10-01 v0.5.4 來源連結逾時修復
 
 - 原 #13/#14 已於 9 月 30 日依使用者指示啟動 Google Drive 任務 #16/#18，分別 935 文件／68,297,220,656 bytes、405 文件／25,976,502,866 bytes；重複 #17 保持暫停，沒有重試停用的 OneDrive 目標。
