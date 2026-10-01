@@ -27,10 +27,18 @@ The Oracle download workers and Google Drive permissions remain unchanged.
 - Actual production requests from Mac, Oracle, and the in-app browser instead
   return Cloudflare HTTP 500 / error 1101. TLS connects, but application access has
   **not** passed. Preview success must not be treated as production acceptance.
-- `worker.mjs` includes additional defensive handling of malformed redirects and
-  logger failures. These final defensive edits are tested locally but **not yet
-  deployed**: the Quick Edit input did not accept the second edit. The dashboard's
-  current version is the first proxy/telemetry implementation, not this final file.
+- At 04:47 UTC, the final `worker.mjs` defensive handling of malformed redirects
+  and logger failures was successfully entered through the focused Quick Edit
+  editor. Reading back its entire text matched the local file exactly (4,260
+  characters). Dashboard confirmed deployed/active version `c1704060`.
+- After this deployment, Mac and Oracle production `/api/health` requests still
+  returned HTTP 500 / error 1101. The editor HTTP preview returned 302 to the new
+  entry's `/login`, with the expected no-store/HSTS/referrer headers and a sanitized
+  custom event. This is still not production acceptance.
+- A live log session for this Worker received no event from a deliberate public
+  request (Ray `a438d13899b4268a-NRT`, 04:45:20 UTC). This suggests a discrepancy in
+  the production routing/execution chain, but does not establish a root cause.
+  Automatic invocation logs remain disabled; no additional logging was enabled.
 - Attempt to toggle production URL for re-registration was stopped by the action
   approval review. No route toggle occurred. Explicit authorization is required
   before stopping/re-enabling even this new, not-yet-usable entry.
@@ -40,6 +48,8 @@ The Oracle download workers and Google Drive permissions remain unchanged.
 
 ## Acceptance / next step
 
+At 04:50 UTC a specific action-time approval was requested for exactly one
+disable/re-enable of this new production URL; it has not been executed.
 After approval, at most one production URL re-registration attempt. If it remains
 broken, do not keep looping on the same platform failure. Preserve the existing
 service and report the concrete remaining hostname/platform requirement.
