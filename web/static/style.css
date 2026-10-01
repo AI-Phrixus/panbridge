@@ -204,7 +204,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .notice, .inline-confirm {padding: 16px 20px; border: 1px solid var(--border-strong); background: var(--bg-solid); border-radius: var(--radius-sm); margin-bottom: 16px; white-space: pre-wrap; overflow-wrap: anywhere;}
 .notice.error {border-left: 4px solid var(--err);}
 .notice.success {border-left: 4px solid var(--ok);}
-.inline-confirm {border-left: 4px solid var(--warn);}
+.inline-confirm {border-left: 4px solid var(--warn); white-space: normal;}
+.inline-confirm p {margin: 0; white-space: pre-wrap;}
 [hidden] {display: none !important;}
 .table-scroll {overflow-x: auto; margin-top: 14px;}
 .table-scroll table {min-width: 700px;}

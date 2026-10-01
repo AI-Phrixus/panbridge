@@ -28,6 +28,7 @@
 - `node --test tests/ui.test.cjs`：11 passed。
 - `node --test edge/worker.test.mjs`：14 passed（既有入口本地測試；不等於正式 Worker 可用）。
 - 內建瀏覽器 loopback 虛構資料：935 文件／10 頁；搜尋第1組選取100，再跨頁選第101文件；回到第1頁和刷新仍101，實際虛構端提交 IDs 正好1–101，只有一次 selection。
+- 最終畫面檢查另驗證全部搜尋結果確實選935件（跨10頁，不只當頁100件）；未提交該全選。確認區移除HTML空白造成的多餘留白，實测高度110.5px，未改確認機制。
 - 詳情與列表暫停→繼續按鈕跟隨狀態；取消確認返回不提交、確認後才提交。無原生對話框。空搜尋、101件等待文件篩選（2頁）正常。
 - 390×844 viewport：整頁 scrollWidth 390，表格自身 700／可視332；驗收後恢復預設 viewport。修復後重新載入沒有新 JavaScript error。
 - 虛構驗收服務 `tests/ui_preview.py` 僅綁127.0.0.1，不讀 `.env`／DB／OAuth、不連雲盤。圖在工作區 `Outputs/ui1`，圖中 DEMO 不是生產任務。
@@ -41,7 +42,7 @@
 | 檔案 | SHA-256 |
 | --- | --- |
 | web/static/ui.js | d1635221c04b7c4526ceb338188370ed93cf2a19413e73dfa59d2d5a82782864 |
-| web/static/style.css | 2fa92882c111287786a4f73af74848b40e63c5ea97d979e1d4973c0aac56a73b |
+| web/static/style.css | ab44224315423a1ec91f840a921ff807c41dbdc979e6af941102bae5aeb1777d |
 | web/templates/index.html | f8dadf5310ec0036975349368136b72a3cf051f8522efc04e455e7fcdbcf4dd0 |
 | web/templates/task.html | c19366128cfb0a77d96337c88eb361905535d42dc6813202bcd99b65684c7081 |
 
