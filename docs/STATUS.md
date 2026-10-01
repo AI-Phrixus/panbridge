@@ -1,5 +1,15 @@
 # 生產狀態快照（可公開）
 
+## 2026-10-01 改用新入口：尚未完成遷移
+
+- 使用者要求改域名，不再增加安全分類例外。既有可用網站區域均在 `indevs.in` 或 `eu.cc` 下；Radar 對 `tdtc777.eu.cc` 亦顯示從 `eu.cc` 繼承 Phishing／CIPA Filter。反向 IPv6 區域不適合作為網站入口；未逐一反覆測試同父域名稱。
+- 在使用者原 Cloudflare 免費帳戶建立獨立 Worker `panbridge`，候選網址 `https://panbridge.phrixusjhon.workers.dev`；不購買域名、不新增付費方案、不改其他網站。
+- 固定 HTTPS 上游為既有 PanBridge，沒有開放任意代理、快取私密回應或擴大 Google Drive 權限。使用者同意折衷記錄：關閉自動完整請求叫用記錄、保留功能類別／狀態／耗時／錯誤代碼的去敏感化程式記錄。
+- Dashboard 顯示 `f4b9de32` 為使用中、100% 流量，Quick Edit 預覽能抵達應用程式並返回登入 302。Mac、Oracle 與內建瀏覽器的正式網址均返回 Cloudflare 500／1101；HTTPS 能建立不等於網站恢復，原因尚未確定。
+- 入口安全／串流／去敏感化及容錯邏輯共 14 項本地測試通過。最後一輪容錯修改尚未進入正式版本，編輯器未接受寫入；不能把本地文件當成已部署檔案。詳見 `edge/README.md`。
+- 重新登記新入口生產 URL 需要停用再啟用；當次操作檢查未允許，沒有切換路由。原 Google OAuth 回呼、Oracle 公開網址、Tunnel 和下載服務均未改動；原 DNS 新例外亦尚未清理，沒有建立 Network Allow 例外。
+- 09:40 日本時間核對 #16／#18 仍 downloading，86／935 與 196／405 done，9.50%／29.08%，#16 仍有 1 份已知逾時待补傳。Oracle 可用 146,854,551,552 bytes；Mac 備份保留，沒有新增或重置搬運任務。
+
 ## 2026-10-01 本站 DNS 例外與連線層驗收
 
 - 使用者確認後，在既有 Gateway 建立「PanBridge 精確主機名允許」DNS 政策：`dns.fqdn == "panbridge.tdtc.indevs.in"`，Allow、啟用、優先順序 1。沒有放行整個 `indevs.in` 或其他子域名；原兩條安全封鎖規則保持啟用及相對順序，DNSSEC 驗證保持開啟，未更改 WARP／本機 DNS 設定。
