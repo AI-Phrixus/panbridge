@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PanBridge</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.0" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.4-ui1" />
+  <script src="/static/ui.js?v=0.5.4-ui1" defer></script>
 </head>
 <body>
   <div class="wrap">
@@ -17,6 +18,11 @@
       </nav>
     </header>
 
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <section id="action-confirm" class="inline-confirm" tabindex="-1" aria-labelledby="confirm-message" hidden>
+      <p id="confirm-message"></p>
+      <div class="actions"><button id="confirm-yes" type="button">確認</button><button id="confirm-no" class="secondary" type="button">返回</button></div>
+    </section>
     <div class="card" id="sysbar" style="padding:12px 20px">
       <span class="muted" id="sysinfo">載入系統狀態…</span>
     </div>
@@ -46,7 +52,7 @@
       <p class="muted" style="margin-top:8px">Google One 空間透過 Google Drive 使用。目標未連接時不會偷偷改存其他網盤。</p>
       <label><input type="checkbox" id="select-files" checked /> 先列出文件讓我選擇，再開始下載</label>
       <div class="actions">
-        <button id="submit">開始後台搬運</button>
+        <button id="submit">建立選檔任務</button>
       </div>
       <p id="createMsg" class="muted"></p>
     </div>
@@ -54,16 +60,20 @@
     <div class="card">
       <h2>任務列表</h2>
       <p id="jobsMeta" class="muted" style="margin-top:0"></p>
-      <table>
+      <p id="refresh-status" class="muted" role="status"></p>
+      <button class="secondary" onclick="jobsPoll.refresh()">立即刷新</button>
+      <div class="table-scroll"><table>
         <thead>
           <tr><th>ID</th><th>來源</th><th>標題 / 連結</th><th>狀態</th><th>進度</th><th></th></tr>
         </thead>
         <tbody id="jobs"></tbody>
-      </table>
+      </table></div>
     </div>
   </div>
-  <script>
+  <script type="module">
     const $ = s => document.querySelector(s);
+    let epoch=0;
+    const activeControls=new Set();
 
     function fmtSpeed(bps) {
       bps = Number(bps) || 0;
@@ -74,12 +84,12 @@
     }
 
     function badge(s) {
-      return '<span class="badge ' + (s || '') + '">' + (s || '') + '</span>';
+      return PB.badge(s);
     }
 
     function bar(p) {
-      p = Number(p) || 0;
-      return '<div class="progress" title="' + p + '%"><i style="width:' + p + '%"></i></div>';
+      p = PB.progress(p);
+      return '<div class="progress" role="progressbar" aria-label="搬運進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="'+p+'" title="' + p + '%"><i style="width:' + p + '%"></i></div>';
     }
 
     function esc(s) {
@@ -91,56 +101,46 @@
     }
 
     async function loadSys() {
-      try {
-        const r = await fetch('/api/tasks/system/status');
-        if (!r.ok) return;
-        const s = await r.json();
+        const s = await PB.request('/api/tasks/system/status');
         const p = s.providers || {};
         const ok = x => (x ? '✓' : '✗');
         const el = $('#sysinfo');
         if (el) {
           const pc = (s.pcloud_free_gb != null)
-            ? (' · pCloud <b>' + s.pcloud_free_gb + 'G</b>')
+            ? (' · pCloud <b>' + esc(s.pcloud_free_gb) + 'G</b>')
             : '';
           el.innerHTML =
-            'v' + (s.version || '?') +
-            ' · 磁盤 <b>' + (s.disk_free_gb ?? '?') + 'G</b>' +
+            'v' + esc(s.version || '?') + ' · UI 1'+
+            ' · 磁盤 <b>' + esc(s.disk_free_gb ?? '?') + 'G</b>' +
             pc +
-            ' · 併發 ' + (s.max_concurrent_jobs ?? '?') +
+            ' · 併發 ' + esc(s.max_concurrent_jobs ?? '?') +
             ' · 帳號 Google' + ok(p.google) +
             ' PC' + ok(p.pcloud) +
             ' 夸克' + ok(p.quark) +
             ' 百度' + ok(p.baidu);
           const ver = document.getElementById('appver');
-          if (ver) ver.textContent = 'v' + (s.version || '');
+          if (ver) ver.textContent = 'v' + (s.version || '')+' · UI 1';
         }
-      } catch (e) {}
     }
 
     async function loadJobs() {
-      try {
-        const r = await fetch('/api/tasks');
-        if (r.status === 401) {
-          location.href = '/login';
-          return;
-        }
-        if (!r.ok) {
-          $('#jobs').innerHTML = '<tr><td colspan="6" class="err">載入失敗 HTTP ' + r.status + '</td></tr>';
-          return;
-        }
-        const data = await r.json();
+        if(activeControls.size)return;
+        const revision=epoch;
+        const data = await PB.request('/api/tasks');
+        if(revision!==epoch)return;
         const jobs = data.jobs || [];
         const meta = $('#jobsMeta');
-        if (meta) meta.textContent = '共 ' + jobs.length + ' 個任務（自動每 2.5 秒刷新）';
+        const count=s=>jobs.filter(j=>j.status===s).length;
+        if (meta) meta.textContent = '共 '+jobs.length+' 個任務 · 正在搬運 '+(count('downloading')+count('uploading'))+' · 等待選檔 '+count('awaiting_selection')+' · 已暫停 '+count('paused')+' · 需要處理 '+count('failed');
         const tb = $('#jobs');
         if (!jobs.length) {
-          tb.innerHTML = '<tr><td colspan="6" class="muted">尚無任務</td></tr>';
+          PB.render(tb,'<tr><td colspan="6" class="muted">尚無任務</td></tr>');
           return;
         }
-        tb.innerHTML = jobs.map(j => {
+        PB.render(tb,jobs.map(j => {
           const retiredTarget = j.destination === 'onedrive';
           const spd = fmtSpeed(j.speed_bps);
-          const prog = Number(j.progress) || 0;
+          const prog = PB.progress(j.progress);
           // status_detail already includes speed when downloading; only append if missing
           const hasSpd = /B\/s|KB\/s|MB\/s/.test(j.status_detail || '');
           const detail = !retiredTarget && j.status_detail
@@ -176,31 +176,32 @@
             '<td>' + actions + '</td>' +
             '</tr>'
           );
-        }).join('');
-      } catch (e) {
-        const tb = $('#jobs');
-        if (tb) tb.innerHTML = '<tr><td colspan="6" class="err">載入異常: ' + esc(e.message || e) + '</td></tr>';
-      }
+        }).join(''));
     }
 
     window.retry = async function (id) {
       await control(id, 'retry');
     };
     window.control = async function(id, action) {
-      if (action === 'delete' && !confirm('移除此任務並停止搬運？雲端文件不會刪除，未完成暫存先保留。')) return;
-      const r = await fetch('/api/tasks/' + id + (action === 'delete' ? '' : '/' + action), {method: action === 'delete' ? 'DELETE' : 'POST'});
-      const d = await r.json().catch(()=>({}));
-      if (!r.ok) { alert(d.detail || '操作失敗'); return; }
-      loadJobs();
+      if(action==='delete'&&!await PB.confirmAction('移除任務 #'+id+' 並停止搬運？Google Drive 文件不刪除，未完成暫存先保留。','確認刪除任務'))return;
+      if(action==='cancel'&&!await PB.confirmAction('取消任務 #'+id+'？已完成的雲端文件保留，未完成的搬運會停止。','確認取消搬運'))return;
+      await PB.once('job:'+id,async()=>{
+        activeControls.add(id);epoch++;
+        $('#jobs').querySelectorAll('button').forEach(el=>el.disabled=true);
+        try{await PB.request('/api/tasks/'+id+(action==='delete'?'':'/'+action),{method:action==='delete'?'DELETE':'POST'});PB.notice('任務 #'+id+'：'+({pause:'已暫停',resume:'已接續',retry:'已排隊重試',cancel:'已取消',delete:'已移除記錄'}[action]||'操作完成')+'。','success');}
+        catch(e){PB.notice(e.message,'error');}
+        finally{activeControls.delete(id);epoch++;$('#jobs').querySelectorAll('button').forEach(el=>el.disabled=false);await jobsPoll.refresh();}
+      });
     };
     window.openJobFolder = async function (id) {
       try {
-        const r = await fetch('/api/tasks/' + id + '/location');
-        const d = await r.json().catch(function(){return {};});
-        if (!r.ok) { alert(d.detail || '無法開啟'); return; }
+        const d = await PB.request('/api/tasks/' + id + '/location');
         const url = d.url || d.folder_url;
-        if (url) window.open(url, '_blank', 'noopener');
-      } catch (e) { alert(String(e)); }
+        if(!url){PB.notice('雲端資料夾尚未建立。');return;}
+        const target=new URL(url,location.origin);
+        if(target.protocol!=='https:'&&target.origin!==location.origin){PB.notice('雲端位置不是安全網址。','error');return;}
+        PB.notice('任務 #'+id+' 的雲端位置已取得。');const link=document.createElement('a');link.href=target.href;link.target='_blank';link.rel='noopener noreferrer';link.textContent='開啟雲端位置';link.className='btn secondary';$('#notice').append(' ',link);
+      } catch (e) { PB.notice(e.message,'error'); }
     };
     window.cancel = async function (id) {
       await control(id, 'cancel');
@@ -208,15 +209,17 @@
 
     $('#logout').onclick = async function (e) {
       e.preventDefault();
-      await fetch('/api/auth/logout', { method: 'POST' });
-      location.href = '/login';
+      try{await PB.request('/api/auth/logout', {method:'POST'});location.href='/login';}catch(error){PB.notice(error.message,'error');}
     };
 
     $('#submit').onclick = async function () {
       const text = $('#links').value.trim();
       if (!text) return;
+      const selectionRequested=$('#select-files').checked;
+      await PB.once('create',async()=>{
+      $('#submit').disabled=true;
       $('#createMsg').textContent = '提交中…';
-      const r = await fetch('/api/tasks', {
+      try{const data = await PB.request('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -224,25 +227,22 @@
           passcode: $('#pwd').value,
           pcloud_path: $('#path').value,
           destination: ($('#dest') && $('#dest').value) || 'google',
-          select_files: $('#select-files').checked
+          select_files: selectionRequested
         })
       });
-      const data = await r.json().catch(function () { return {}; });
-      if (!r.ok) {
-        let err = data.detail || r.statusText;
-        if (Array.isArray(err)) err = err.map(function (x) { return x.msg || JSON.stringify(x); }).join('; ');
-        $('#createMsg').innerHTML = '<span class="err">' + esc(err) + '</span>';
-        return;
-      }
-      $('#createMsg').innerHTML = '<span class="ok">已建立任務: ' + (data.job_ids || []).join(', ') + '</span>';
-      $('#links').value = '';
-      loadJobs();
+      if(!Array.isArray(data.job_ids)||!data.job_ids.length)throw new Error('尚未確認任務編號，請刷新查看，不要連續提交。');
+      $('#createMsg').textContent = '已建立任務：'+data.job_ids.join(', ')+(selectionRequested?'；請在任務中選檔後開始搬運。':'；已排隊搬運。');
+      if($('#links').value.trim()===text)$('#links').value = '';
+      epoch++;await jobsPoll.refresh();
+      }catch(error){$('#createMsg').textContent=error.message;}
+      finally{$('#submit').disabled=false;}
+      });
     };
 
-    loadJobs();
-    loadSys();
-    setInterval(loadJobs, 2500);
-    setInterval(loadSys, 15000);
+    $('#select-files').onchange=()=>{$('#submit').textContent=$('#select-files').checked?'建立選檔任務':'開始後台搬運';};
+    const jobsPoll=PB.poll(loadJobs,{interval:3000,onSuccess:()=>{$('#refresh-status').textContent='已更新 · '+new Date().toLocaleTimeString()+' · 背景頁面暫停刷新';},onError:e=>{$('#refresh-status').textContent=e.message;}});
+    PB.poll(loadSys,{interval:20000,onError:()=>{$('#sysinfo').textContent='系統狀態暫時無法更新，搬運不依賴此頁面。';}});
+    window.jobsPoll=jobsPoll;
   </script>
 </body>
 </html>

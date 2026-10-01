@@ -4,17 +4,23 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>任務 · PanBridge</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.0" />
+  <link rel="stylesheet" href="/static/style.css?v=0.5.4-ui1" />
+  <script src="/static/ui.js?v=0.5.4-ui1" defer></script>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span> <small style="font-size:.65rem">選檔 · 暫停 · 雲端搬運</small></div>
+      <div class="logo">Pan<span>Bridge</span> <small class="ui-version">選檔 · 暫停 · 雲端搬運 · UI 1</small></div>
       <nav>
         <a href="/">← 任務列表</a>
         <a href="/settings">帳號設定</a>
       </nav>
     </header>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <section id="action-confirm" class="inline-confirm" tabindex="-1" aria-labelledby="confirm-message" hidden>
+      <p id="confirm-message"></p>
+      <div class="actions"><button id="confirm-yes" type="button">確認</button><button id="confirm-no" class="secondary" type="button">返回</button></div>
+    </section>
     <div class="card">
       <h2>任務 #<span id="jid">{{ job_id }}</span></h2>
       <div id="meta" class="muted"></div>
@@ -25,29 +31,41 @@
         <button type="button" class="secondary" onclick="document.getElementById('google-copy-confirm').hidden=true">返回</button>
       </section>
       <div id="err" class="err"></div>
+      <p id="refresh-status" class="muted" role="status"></p>
+      <button class="secondary" type="button" onclick="jobPoll.refresh()">立即刷新</button>
     </div>
     <div class="card">
       <h3>檔案</h3>
       <p class="muted">Google Drive 私人文件：Infuse 請在「新增檔案 → 新增共享」連接 Google Drive；Windows／Mac 的 VLC 可開啟 Google Drive 電腦版中的串流文件。不要把私人文件改為公開分享。Oracle 不轉送已交付的影片。</p>
       <div id="selection" hidden>
         <p>勾選想要下載的文件，未選文件不會下载。</p>
-        <input id="filter-files" placeholder="搜尋文件名稱或資料夾" oninput="filterFiles()" />
-        <div class="actions"><button class="secondary" onclick="selectVisible(true)">選取搜尋結果</button><button class="secondary" onclick="selectVisible(false)">取消搜尋結果</button><button onclick="confirmSelection()">確認並開始搬運</button></div>
+        <div class="actions"><button class="secondary" onclick="selectVisible(true)">選取全部搜尋結果</button><button class="secondary" onclick="selectVisible(false)">取消全部搜尋結果</button><button id="start-selection" onclick="confirmSelection()">確認並開始搬運</button></div>
         <p id="selection-summary" class="muted"></p>
       </div>
-      <table>
+      <p id="file-summary" class="muted"></p>
+      <div class="row file-tools">
+        <input id="filter-files" aria-label="搜尋文件名稱或資料夾" placeholder="搜尋文件名稱或資料夾" oninput="filterFiles()" />
+        <select id="filter-status" aria-label="篩選文件狀態" onchange="filterFiles()"><option value="">全部狀態</option><option value="failed">需要處理</option><option value="done">已完成</option><option value="active">正在搬運</option><option value="queued">等待搬運</option></select>
+      </div>
+      <div class="pagination"><button id="previous-page" class="secondary" onclick="changePage(-1)">上一頁</button><span id="page-status" class="muted" role="status"></span><button id="next-page" class="secondary" onclick="changePage(1)">下一頁</button></div>
+      <div class="table-scroll"><table>
         <thead>
           <tr><th>路徑</th><th>大小</th><th>下載</th><th>上傳</th><th>狀態</th><th>操作</th></tr>
         </thead>
         <tbody id="files"></tbody>
-      </table>
+      </table></div>
     </div>
   </div>
-  <script>
+  <script type="module">
     const jobId = {{ job_id }};
     const selectedIds = new Set();
     let currentFiles = [];
     let currentStatus = '';
+    let currentDest = '';
+    let page = 1;
+    const pageSize = 100;
+    let acting = false;
+    let epoch = 0;
     function fmt(n){
       n = Number(n)||0;
       if (n < 1024) return n+' B';
@@ -58,39 +76,46 @@
     function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
     async function openLocation(jobId, fileId){
       try {
-        const r = await fetch('/api/tasks/'+jobId+'/files/'+fileId+'/location');
-        const d = await r.json().catch(()=>({}));
-        if (!r.ok) { alert(d.detail || '無法取得位置'); return; }
+        const d = await PB.request('/api/tasks/'+jobId+'/files/'+fileId+'/location');
         const url = d.url || d.folder_url;
-        if (!url) { alert('尚無雲端位置（可能還未上傳完成）'); return; }
-        window.open(url, '_blank', 'noopener');
-      } catch (e) { alert(String(e)); }
+        if (!url) { PB.notice('尚無雲端位置（可能還未上傳完成）','error'); return; }
+        showLocation(url);
+      } catch (e) { PB.notice(e.message,'error'); }
     }
     async function openJobFolder(){
       try {
-        const r = await fetch('/api/tasks/'+jobId+'/location');
-        const d = await r.json().catch(()=>({}));
-        if (!r.ok) { alert(d.detail || '無法開啟資料夾'); return; }
+        const d = await PB.request('/api/tasks/'+jobId+'/location');
         const url = d.url || d.folder_url;
-        if (url) window.open(url, '_blank', 'noopener');
-      } catch (e) { alert(String(e)); }
+        if (url) showLocation(url);
+        else PB.notice('資料夾尚未建立。','info');
+      } catch (e) { PB.notice(e.message,'error'); }
+    }
+    function showLocation(url){
+      const target = new URL(url,location.origin);
+      if(target.protocol!=='https:' && target.origin!==location.origin){PB.notice('雲端位置不是安全網址。','error');return;}
+      // Use a user-clicked link: async window.open is blocked by many browsers.
+      PB.notice('雲端位置已取得，請按下方連結。');
+      const link=document.createElement('a');link.href=target.href;link.target='_blank';link.rel='noopener noreferrer';link.textContent='開啟雲端位置';link.className='btn secondary';
+      document.getElementById('notice').append(' ',link);
     }
     async function load(){
-      const r = await fetch('/api/tasks/'+jobId);
-      if (r.status===401){ location.href='/login'; return; }
-      if (!r.ok) { document.getElementById('err').textContent='任務不存在或已移除'; return; }
-      const {job, files} = await r.json();
+      if(acting)return;
+      const revision=epoch;
+      const {job, files} = await PB.request('/api/tasks/'+jobId);
+      if(revision!==epoch)return;
       currentStatus = job.status; currentFiles = files || [];
+      const known=new Set(currentFiles.map(f=>f.id));for(const id of selectedIds)if(!known.has(id))selectedIds.delete(id);
       document.getElementById('selection').hidden = job.status !== 'awaiting_selection';
       const spd = (function(bps){bps=Number(bps)||0; if(bps<=0)return ''; if(bps<1048576)return (bps/1024).toFixed(1)+' KB/s'; return (bps/1048576).toFixed(2)+' MB/s';})(job.speed_bps);
       const dest = job.destination || 'auto';
+      currentDest = dest;
       const retiredTarget = dest === 'onedrive';
       document.getElementById('meta').innerHTML =
-        `<div>來源 <b>${esc(job.source_type)}</b> · 目標 <b>${esc(retiredTarget ? '舊目標（已停用）' : dest)}</b> · <span class="badge ${esc(job.status)}">${esc(job.status)}</span> · ${job.progress}% ${spd?' · '+spd:''}</div>
+        `<div>來源 <b>${esc(job.source_type)}</b> · 目標 <b>${esc(retiredTarget ? '舊目標（已停用）' : dest)}</b> · ${PB.badge(job.status)} · ${PB.progress(job.progress).toFixed(1)}% ${spd?' · '+spd:''}</div>
          <div class="muted" style="margin-top:6px">${esc(retiredTarget ? '保留原任務記錄，可重新搬運到 Google Drive。' : job.status_detail||'')}</div>
          <div style="word-break:break-all;margin-top:6px">${esc(job.share_url)}</div>
          <div class="muted">路徑前綴：${esc(job.pcloud_path||'')}</div>
-         <div class="progress" style="margin-top:10px"><i style="width:${job.progress||0}%"></i></div>`;
+         <div class="progress" role="progressbar" aria-label="任務進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${PB.progress(job.progress)}" style="margin-top:10px"><i style="width:${PB.progress(job.progress)}%"></i></div>`;
       document.getElementById('err').textContent = retiredTarget ? '' : job.error_message||'';
       const ja = document.getElementById('jobActions');
       let acts = retiredTarget ? '' : `<button type="button" class="secondary" onclick="openJobFolder()">在雲端開啟此任務資料夾</button>`;
@@ -104,11 +129,21 @@
       }
       if (job.status === 'paused') acts += ` <button onclick="controlJob('resume')">繼續</button>`;
       acts += ` <button class="secondary danger" onclick="controlJob('delete')">刪除任務</button>`;
-      ja.innerHTML = acts;
+      PB.render(ja,acts);
+      const counts=currentFiles.reduce((a,f)=>{a[f.status]=(a[f.status]||0)+1;return a;},{});
+      document.getElementById('file-summary').textContent=`共 ${currentFiles.length} 個文件 · 已完成 ${counts.done||0} · 正在搬運 ${(counts.downloading||0)+(counts.uploading||0)} · 需要處理 ${counts.failed||0}`;
+      renderFiles();
+    }
+    function matchingFiles(){const q=document.getElementById('filter-files').value.toLocaleLowerCase();const status=document.getElementById('filter-status').value;return currentFiles.filter(f=>(f.relative_path||f.remote_name||'').toLocaleLowerCase().includes(q)&&(!status||(status==='active'?['downloading','uploading'].includes(f.status):f.status===status)));}
+    function renderFiles(){
+      const dest=currentDest,retiredTarget=dest==='onedrive';
       const isLocal = dest === 'local';
+      const matches=matchingFiles();const pages=Math.max(1,Math.ceil(matches.length/pageSize));page=Math.min(page,pages);
+      document.getElementById('page-status').textContent=`搜尋結果 ${matches.length} 個 · 第 ${page}／${pages} 頁（每頁 ${pageSize} 個）`;
+      document.getElementById('previous-page').disabled=page<=1;document.getElementById('next-page').disabled=page>=pages;
       const videoExt = /\.(mp4|mkv|webm|mov|m4v|avi|ts|m2ts|flv|wmv|mpg|mpeg|3gp|rmvb|rm|hevc|h265)$/i;
       const browserNativeExt = /\.(mp4|webm|mov|m4v)$/i;
-      document.getElementById('files').innerHTML = (files||[]).map(f => {
+      PB.render(document.getElementById('files'), matches.slice((page-1)*pageSize,page*pageSize).map(f => {
         let op = '';
         const name = f.relative_path||f.remote_name||'';
         if (!retiredTarget && videoExt.test(name) && f.status === 'done' && dest !== 'google') {
@@ -126,48 +161,45 @@
           }
         }
         return `<tr>
-          <td>${job.status==='awaiting_selection'?`<input type="checkbox" data-file-id="${f.id}" ${selectedIds.has(f.id)?'checked':''} onchange="toggleFile(${f.id},this.checked)" />`:''}${esc(name)}<div class="muted">${esc(retiredTarget ? '' : f.pcloud_path||'')}</div>
+          <td>${currentStatus==='awaiting_selection'?`<input type="checkbox" aria-label="選取文件：${esc(name)}" data-file-id="${f.id}" ${selectedIds.has(f.id)?'checked':''} onchange="toggleFile(${f.id},this.checked)" />`:''}${esc(name)}<div class="muted">${esc(retiredTarget ? '' : f.pcloud_path||'')}</div>
             ${!retiredTarget && f.error_message?`<div class="err">${esc(f.error_message)}</div>`:''}</td>
           <td>${fmt(f.size)}</td>
           <td>${fmt(f.downloaded_bytes)}${(f.status==='downloading'||f.status==='uploading')&&f.size?` <span class="muted">(${Math.min(100,(100*(f.downloaded_bytes||0)/f.size)).toFixed(1)}%)</span>`:''}</td>
           <td>${fmt(f.uploaded_bytes)}</td>
-          <td><span class="badge ${esc(f.status)}">${esc(f.status)}</span></td>
+          <td>${PB.badge(f.status)}</td>
           <td>${op}</td>
         </tr>`;
-      }).join('') || '<tr><td colspan="6" class="muted">解析中或尚無檔案…</td></tr>';
-      filterFiles();
+      }).join('') || '<tr><td colspan="6" class="muted">'+(currentFiles.length?'沒有符合條件的文件':'解析中或尚無檔案…')+'</td></tr>');
+      selectionSummary();
     }
-    function googlePlayback(){alert('Infuse：在新增共享中連接 Google Drive，開啟對應的 PanBridge 資料夾。\nVLC（Windows/Mac）：安裝 Google Drive 電腦版，使用串流模式，在 Drive 資料夾中用 VLC 開啟此文件。\nGoogle 私人文件需要登入；本站不會把 token 放进播放網址，也不會公開你的文件。');}
-    function toggleFile(id, checked){if(checked) selectedIds.add(id); else selectedIds.delete(id); selectionSummary();}
+    function googlePlayback(){PB.notice('Google 私人文件需要播放器登入你的 Google Drive。請從播放器或 Google Drive 電腦版開啟對應 PanBridge 文件；本站不公開文件，也不把憑證放進播放網址。');}
+    function toggleFile(id, checked){if(checked) selectedIds.add(id); else selectedIds.delete(id);PB.invalidate(document.getElementById('files'));selectionSummary();}
     function selectionSummary(){const chosen=currentFiles.filter(f=>selectedIds.has(f.id)); document.getElementById('selection-summary').textContent='已選 '+chosen.length+' 個文件 · '+fmt(chosen.reduce((n,f)=>n+Number(f.size||0),0));}
-    function filterFiles(){const q=document.getElementById('filter-files').value.toLowerCase(); document.querySelectorAll('#files tr').forEach((row,i)=>{const f=currentFiles[i]; row.hidden=currentStatus==='awaiting_selection' && f && !(f.relative_path||f.remote_name||'').toLowerCase().includes(q);}); selectionSummary();}
-    function selectVisible(checked){document.querySelectorAll('#files tr:not([hidden]) input[data-file-id]').forEach(el=>{el.checked=checked; toggleFile(Number(el.dataset.fileId),checked);});}
-    async function confirmSelection(){if(!selectedIds.size){alert('請至少選一個文件');return;} const r=await fetch('/api/tasks/'+jobId+'/selection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_ids:[...selectedIds]})});const d=await r.json().catch(()=>({}));if(!r.ok){alert(d.detail||'選檔失敗');return;} await load();}
-    async function controlJob(action){if(action==='delete'&&!confirm('移除任務並停止搬運？雲端文件不刪除，未完成暫存先保留。'))return; const r=await fetch('/api/tasks/'+jobId+(action==='delete'?'':'/'+action),{method:action==='delete'?'DELETE':'POST'});const d=await r.json().catch(()=>({}));if(!r.ok){alert(d.detail||'操作失敗');return;}if(action==='delete'){location.href='/';return;}await load();}
-    let copyingToGoogle = false;
+    function filterFiles(){page=1;renderFiles();}
+    function changePage(delta){page=Math.max(1,page+delta);renderFiles();}
+    function selectVisible(checked){for(const f of matchingFiles()){if(checked)selectedIds.add(f.id);else selectedIds.delete(f.id);}renderFiles();}
+    async function mutate(action){return PB.once('job',async()=>{acting=true;epoch++;document.querySelectorAll('#jobActions button,#start-selection,#google-copy-submit').forEach(el=>el.disabled=true);try{await action();}catch(e){PB.notice(e.message,'error');}finally{acting=false;epoch++;document.querySelectorAll('#jobActions button,#start-selection,#google-copy-submit').forEach(el=>el.disabled=false);await jobPoll.refresh();}});}
+    async function confirmSelection(){if(!selectedIds.size){PB.notice('請至少選一個文件。','error');return;}const ids=[...selectedIds];await mutate(async()=>{await PB.request('/api/tasks/'+jobId+'/selection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_ids:ids})});PB.notice('已提交選檔，雲端將依序搬運。','success');});}
+    async function controlJob(action){
+      if(action==='delete' && !await PB.confirmAction('移除任務並停止搬運？Google Drive 文件不會刪除，未完成的服務器暫存先保留。','確認刪除任務'))return;
+      if(action==='cancel' && !await PB.confirmAction('取消此任務？已完成的雲端文件保留，未完成的搬運會停止。','確認取消搬運'))return;
+      await mutate(async()=>{await PB.request('/api/tasks/'+jobId+(action==='delete'?'':'/'+action),{method:action==='delete'?'DELETE':'POST'});if(action==='delete'){location.href='/';return;}PB.notice(action==='pause'?'已暫停；已完成文件保留，可按繼續恢復。':action==='resume'?'已接續搬運。':'操作已完成。','success');});
+    }
     async function copyToGoogle(){
-      if(copyingToGoogle)return;
-      copyingToGoogle=true;
-      document.getElementById('google-copy-submit').disabled=true;
-      try{
-        const r=await fetch('/api/tasks/'+jobId+'/copy-to-google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({select_files:true})});
-        const d=await r.json().catch(()=>({}));
-        if(!r.ok){document.getElementById('err').textContent=d.detail||'建立失敗';return;}
+      await mutate(async()=>{
+        const d=await PB.request('/api/tasks/'+jobId+'/copy-to-google',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({select_files:true})});
+        if(!Number.isSafeInteger(d.job_id)||d.job_id<=0)throw new Error('尚未確認新任務編號，請刷新查看，不要連續提交。');
         location.href='/tasks/'+d.job_id;
-      }catch(e){document.getElementById('err').textContent='連線中斷，請再試；已建立的任務會被復用。';}
-      finally{copyingToGoogle=false;document.getElementById('google-copy-submit').disabled=false;}
+      });
     }
     window.retryJob = async function(){
-      const r = await fetch('/api/tasks/'+jobId+'/retry', {method:'POST'});
-      const d = await r.json().catch(()=>({}));
-      if (!r.ok) { alert(d.detail || '重試失敗'); return; }
-      load();
+      await controlJob('retry');
     };
     window.cancelJob = async function(){
-      if (!confirm('確定取消此任務？')) return;
       await controlJob('cancel');
     };
-    load(); setInterval(load, 2000);
+    const jobPoll=PB.poll(load,{interval:3000,onSuccess:()=>{document.getElementById('refresh-status').textContent='已更新 · '+new Date().toLocaleTimeString()+' · 背景頁面暫停刷新';},onError:e=>{document.getElementById('refresh-status').textContent=e.message;}});
+    Object.assign(window,{openLocation,openJobFolder,filterFiles,changePage,selectVisible,toggleFile,confirmSelection,controlJob,copyToGoogle,googlePlayback,jobPoll});
   </script>
 </body>
 </html>

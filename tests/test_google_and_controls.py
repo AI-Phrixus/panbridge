@@ -369,5 +369,9 @@ def test_google_copy_confirmation_does_not_block_browser_dialogs():
     assert 'id="google-copy-confirm" hidden' in template
     assert 'id="google-copy-submit" onclick="copyToGoogle()"' in template
     assert "select_files:true" in copy_handler
-    assert "if(copyingToGoogle)return" in copy_handler
-    assert "disabled=true" in copy_handler and "disabled=false" in copy_handler
+    # The shared per-task lock now excludes copy/delete/pause races as well.
+    assert "await mutate(async()=>" in copy_handler
+    assert "PB.once('job'" in template
+    assert "#google-copy-submit" in template
+    mutation_handler = template.split("async function mutate(action)", 1)[1].split("async function confirmSelection", 1)[0]
+    assert "disabled=true" in mutation_handler and "disabled=false" in mutation_handler

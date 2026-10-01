@@ -1,24 +1,26 @@
 # PanBridge 交接手冊（新帳號接手必讀）
 
-> 倉庫版本：**v0.4.5**（實際部署以 `/api/health` 為準）
+> 倉庫版本：**v0.5.4 · UI 1**（後端以 `/api/health` 為準）
 >
-> 最後更新：2026-09-30
+> 最後更新：2026-10-01
 > 目的：讓**全新 GitHub / 開發環境**在不依賴舊對話上下文的情況下，能接手運維與開發。
 
 ---
 
 ### 最新增量與待辦
 
-2026-09-30 已將下載器連線池熱修復 `f7a5ff8` 發布至 GitHub main 與 Oracle。保留 v0.4.5 版本標記，詳情、證據及回復檔案見 [STATUS.md](STATUS.md) 和 [開源傳輸設計評估](OPEN_SOURCE_TRANSFER_REVIEW.md)。
+2026-10-01 生產後端 v0.5.4；Google Drive、暫停／選檔／刪除已部署。UI 1 僅更新 web 檔案、不重啟搬運服務，詳見 [STATUS.md](STATUS.md)、[UI 驗收與復原](UI1_REVIEW.md)。先前連線池與開源設計評估見 [OPEN_SOURCE_TRANSFER_REVIEW.md](OPEN_SOURCE_TRANSFER_REVIEW.md)。
 
-OneDrive 已失效，不要以舊文件的 `done` 或 2026-08-26 驗收證明當前可用性。Google Drive 適配、暫停／選檔／刪除正在開發，**未發布**；使用者選擇 #13/#14 重新搬運，但尚未啟動新的 Google 任務。不要直接對仍指向 OneDrive 的舊任務按重試。已建立 Google 專用 Cloud 專案；建立 OAuth 憑證與授予持久 Drive 存取需在實際操作時取得使用者授權，不在文件中保存密鑰。
+OneDrive 已停用，原 #13/#14 只保留記錄，不按重試。已獲授權的 Google OAuth（特定文件）連接並加密保存在 Oracle；新任務 #16（935 件）／#18（405 件）持續搬運，#17 保持暫停。150 GB 磁碟已擴容；A1 升級已依要求停止。Mac 備份 477 文件不能僅依任務 done 刪除，須依背景排程的 Google 全量 size／SHA-256 校驗門檻。
+
+目前公開入口尚待恢復：舊域受安全分類影響，候選 workers.dev 正式端 500／1101；不是下載服務離線。沒有更改 Google 回呼或公開來源。不要新增安全例外、切換入口或以預覽成功宣稱正式可用；後續操作須按當次授權。下方早期架構／版本紀錄有歷史資訊，以本節及 STATUS 的最新驗證為準。
 
 ## 1. 這是什麼
 
 **PanBridge** = 自建「網盤中繼」：
 
 ```
-夸克 / 百度 分享連結  →  VPS 下載（斷點續傳）  →  OneDrive / pCloud / 本機暫存
+夸克 / 百度 分享連結  →  VPS 選檔、下载（斷點續傳）  →  Google Drive / pCloud / 本機暫存
 ```
 
 - Web UI（繁體為主）貼連結 → 後台 worker 自動跑  
@@ -33,7 +35,7 @@ OneDrive 已失效，不要以舊文件的 `done` 或 2026-08-26 驗收證明當
 |------|-----|
 | 公網 IP | `152.70.86.29` |
 | 區域 | Oracle Cloud · Osaka（建議亞太） |
-| 實例 | Oracle Free 小規格 / **x86_64**（以 `uname -m` 為準）/ ~50GB 盤 |
+| 實例 | Oracle Free E2.1.Micro / **x86_64** / 150 GB 開機磁碟；A1 升級暫停 |
 | SSH | `ssh ubuntu@152.70.86.29`（用你 OCI 的私鑰） |
 | 程式目錄 | `/home/ubuntu/panbridge` |
 | 資料目錄 | `/home/ubuntu/panbridge/data`（DB + 暫存，**勿當 git 倉庫**） |

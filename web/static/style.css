@@ -63,7 +63,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 .wrap {
-  max-width: 980px;
+  max-width: 1160px;
   margin: 0 auto;
   padding: 28px 20px 80px;
 }
@@ -154,6 +154,7 @@ input:focus, textarea:focus, select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(0,113,227,0.2);
 }
+input[type="checkbox"] { width: 18px; height: 18px; padding: 0; vertical-align: middle; margin-right: 8px; accent-color: var(--accent); }
 textarea {
   min-height: 100px;
   resize: vertical;
@@ -199,6 +200,21 @@ button.secondary:hover, .btn.secondary:hover {
 button.danger { background: var(--err); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 .actions { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+.ui-version {font-size: .7rem; color: var(--muted); font-weight: 500;}
+.notice, .inline-confirm {padding: 16px 20px; border: 1px solid var(--border-strong); background: var(--bg-solid); border-radius: var(--radius-sm); margin-bottom: 16px; white-space: pre-wrap; overflow-wrap: anywhere;}
+.notice.error {border-left: 4px solid var(--err);}
+.notice.success {border-left: 4px solid var(--ok);}
+.inline-confirm {border-left: 4px solid var(--warn);}
+[hidden] {display: none !important;}
+.table-scroll {overflow-x: auto; margin-top: 14px;}
+.table-scroll table {min-width: 700px;}
+.table-scroll td {overflow-wrap: anywhere;}
+.table-scroll td:last-child {min-width: 160px;}
+.file-tools {margin: 12px 0;}
+.file-tools input {flex: 3;}
+.file-tools select {flex: 1;}
+.pagination {display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 14px 0;}
+:focus-visible {outline: 3px solid var(--accent); outline-offset: 3px;}
 
 table {
   width: 100%;
@@ -256,6 +272,8 @@ tbody tr:hover td {
   color: var(--err);
   background: rgba(255,59,48,0.14);
 }
+.badge.paused, .badge.awaiting_selection {color: var(--accent); background: rgba(0,113,227,.12);}
+.badge.skipped {color: var(--muted);}
 
 .progress {
   height: 6px;
@@ -307,6 +325,6 @@ code {
 @media (max-width: 640px) {
   .wrap { padding: 16px 12px 64px; }
   header { top: 8px; }
-  th:nth-child(3), td:nth-child(3) { max-width: 40vw; }
   .card { padding: 16px; border-radius: 14px; }
 }
+@media (prefers-reduced-motion: reduce) {*, *::before, *::after {transition: none !important; scroll-behavior: auto !important;}}

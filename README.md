@@ -1,16 +1,16 @@
 # PanBridge
 
-**雲端常駐中繼**：把 [夸克網盤](https://pan.quark.cn) / [百度網盤](https://pan.baidu.com) 分享連結，自動搬到 **OneDrive**、**pCloud** 或 **伺服器暫存**。
+**雲端常駐中繼**：把 [夸克網盤](https://pan.quark.cn) / [百度網盤](https://pan.baidu.com) 分享連結，選檔後搬到 **Google Drive（Google One 空間）**、**pCloud** 或 **伺服器暫存**。此部署已停用 OneDrive，舊任務只保留記錄。
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 | | |
 |--|--|
-| **版本** | v0.5.3（生產版本以 `/api/health` 為準） |
+| **版本** | v0.5.4 · UI 1（後端以 `/api/health` 為準；新域名入口尚待驗收） |
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
-| **核心能力** | 貼連結即跑 · 斷點續傳 · 大檔 OneDrive · 串流播放 |
+| **核心能力** | 批量連結 · 搜尋選檔 · 暫停／繼續 · 斷點續傳 · 私人 Google Drive 搬運 |
 | **倉庫** | https://github.com/AI-Phrixus/panbridge |
 
 > **新人接手請先讀**  
@@ -27,11 +27,14 @@
 - 貼夸克 / 百度分享連結（可批量）→ 後台排隊執行  
 - **斷點續傳**（`.part` + HTTP Range；服務重啟可恢復）  
 - 直鏈過期自動重新取鏈；夸克輪換 Cookie 自動加密保存
-- 目標：**OneDrive**（大檔推薦）/ **pCloud** / **伺服器暫存**  
+- 目標：**Google Drive** / **pCloud** / **伺服器暫存**；Google 授權只限經本應用使用的特定文件，不新增公開分享
+- 文件名稱／狀態篩選、每頁 100 件；選取搜尋結果涵蓋全部頁面，顯示已選數量與容量
+- 暫停／繼續、頁面內取消／刪除確認；刪除任務不刪已交付雲端文件
+- 自動刷新串行、不重疊，隱藏頁面停止刷新、連線失敗退避；狀態變更請求不自動重播
 - 進度按**檔案大小加權**；詳情顯示 MB/GB 與速度  
-- 網頁 HLS／轉碼播放；外部播放器限時簽名串流（VLC、Infuse、IINA、PotPlayer）
+- 非 Google 目標保留網頁 HLS／轉碼與外部播放器限時串流。Google 私人文件用 Infuse 連接 Drive，或 VLC 開啟 Drive 電腦版文件；不宣稱 Google 網頁直接播放／Windows 實機已驗收
 - 一鍵打開雲端資料夾  
-- 帳號：掃碼或 Cookie / pCloud token / OneDrive 裝置碼  
+- 帳號：夸克掃碼或 Cookie / 百度掃碼 / Google OAuth / pCloud token
 - v1 **不推送通知**（完成請看 UI 或雲盤）
 
 ---
