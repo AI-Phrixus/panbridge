@@ -26,8 +26,9 @@ from app.sinks.onedrive import (
     OneDriveSink,
     normalize_onedrive_target,
 )
-from app.transfer.disk import ensure_space
+from app.transfer.disk import ensure_space, free_bytes
 from app.transfer.downloader import downloaded_bytes_on_disk, resumable_download
+from app.transfer.pipeline import PipelineProgress, PipelineResources, StagingCapacityError
 
 log = logging.getLogger("panbridge.worker")
 
@@ -78,6 +79,7 @@ class Worker:
         self._running_jobs: set[int] = set()
         self._job_tasks: dict[int, asyncio.Task] = {}
         self._last_wait_mark: float = 0.0
+        self._pipeline_resources: PipelineResources | None = None
 
     def start(self) -> None:
         if self._task and not self._task.done():
@@ -239,7 +241,7 @@ class Worker:
             try:
                 j = await self.db.get_job(job_id)
                 if j and j.get("status") not in ("cancelled", "paused", "deleted", "awaiting_selection"):
-                    await self.db.update_job(
+                    await self.db.update_transfer_job(
                         job_id,
                         status_detail="任務中斷，等待自動續傳…",
                         speed_bps=0,
@@ -258,7 +260,8 @@ class Worker:
                 # leave a plausible-looking but incomplete subset. Force the
                 # next retry to resolve atomically instead of silently skipping files.
                 await self.db.clear_files(job_id)
-            await self.db.update_job(
+            update = self.db.update_job if failed_phase in ("resolving", "saving") else self.db.update_transfer_job
+            await update(
                 job_id,
                 status="failed",
                 error_message=_error_message(e)[:2000],
@@ -388,7 +391,16 @@ class Worker:
             if f.get("status") in ("downloading", "uploading"):
                 await self.db.update_file(int(f["id"]), status="queued", error_message="")
                 f["status"] = "queued"
-        for f in files:
+        serial_files = files
+        if dest != "local" and settings.transfer_prefetch_files > 1:
+            result = await self._run_file_pipeline(
+                source, sink, job_id, files, base_path, job_tmp, share_meta, settings,
+            )
+            if result is None:
+                return
+            file_errors.extend(result)
+            serial_files = []
+        for f in serial_files:
             job = await self.db.get_job(job_id)
             if not job or job["status"] in ("cancelled", "paused", "deleted", "awaiting_selection"):
                 return
@@ -451,7 +463,7 @@ class Worker:
                 detail = "全部完成 · 已交付 Google Drive"
             else:
                 detail = "全部完成 · 請到 pCloud 自取"
-            await self.db.update_job(
+            await self.db.update_transfer_job(
                 job_id,
                 status="done",
                 progress=100,
@@ -466,7 +478,7 @@ class Worker:
             if not errs and file_errors:
                 errs = "; ".join(file_errors)
             n_ok = sum(1 for x in files if x["status"] == "done")
-            await self.db.update_job(
+            await self.db.update_transfer_job(
                 job_id,
                 status="failed",
                 error_message=errs[:2000],
@@ -477,13 +489,91 @@ class Worker:
             # BUG-13: never mark done with non-terminal leftovers
             pending = [x for x in files if x["status"] not in ("done", "failed")]
             names = ", ".join((x.get("remote_name") or "?") for x in pending[:5])
-            await self.db.update_job(
+            await self.db.update_transfer_job(
                 job_id,
                 status="failed",
                 error_message=f"未完成檔案: {names}"[:2000],
                 status_detail=f"異常中止（{len(pending)} 個檔案未完成）· 可點重試",
                 speed_bps=0,
             )
+
+    async def _run_file_pipeline(self, source, sink, job_id, files, base_path,
+                                 job_tmp, share_meta, settings) -> list[str] | None:
+        if self._pipeline_resources is None:
+            self._pipeline_resources = PipelineResources(
+                settings.tmp_path, settings.transfer_prefetch_files,
+                settings.transfer_staging_bytes, settings.disk_reserve_bytes,
+            )
+        resources = self._pipeline_resources
+        progress = PipelineProgress(self.db, job_id, resources)
+        errors = [f.get("error_message") or "failed" for f in files if f["status"] == "failed"]
+        remaining = iter(f for f in files if f["status"] not in ("done", "skipped", "failed"))
+        pending: dict[asyncio.Task, dict] = {}
+        exhausted = False
+
+        async def process(f):
+            fid = int(f["id"])
+            safe = "".join(c if c not in '\\/:*?"<>|' else "_" for c in f["remote_name"])
+            final = job_tmp / f"{fid}_{safe}"
+            try:
+                await progress.report(fid, "waiting")
+                async with resources.reserve_file(
+                    fid, int(f.get("size") or 0), (final, Path(str(final) + ".part")),
+                ):
+                    await self._process_file(source, sink, job_id, f, base_path,
+                                             job_tmp, share_meta, pipeline=progress)
+            except Exception as error:
+                if _is_auth_error(error) or isinstance(error, (GooglePermanentUploadError, StagingCapacityError)):
+                    progress.abort(error)
+                raise
+            finally:
+                await progress.remove(fid)
+
+        try:
+            while pending or not exhausted:
+                job = await self.db.get_job(job_id)
+                if not job or job["status"] in ("cancelled", "paused", "deleted", "awaiting_selection"):
+                    return None
+                while not exhausted and len(pending) < resources.max_files:
+                    f = next(remaining, None)
+                    if f is None:
+                        exhausted = True
+                        break
+                    task = asyncio.create_task(process(f), name=f"transfer-{job_id}-{f['id']}")
+                    pending[task] = f
+                if not pending:
+                    break
+                completed, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                if progress.failure is not None:
+                    error = progress.failure
+                    detail = ("帳號登入失效 · 請到設定頁重新連接後重試"
+                              if _is_auth_error(error) else "搬運已停止；暫存和續傳進度保留，請檢查空間或權限")
+                    await self.db.update_transfer_job(job_id, status="failed",
+                        error_message=_error_message(error)[:2000], status_detail=detail, speed_bps=0)
+                    return None
+                for task in completed:
+                    f = pending.pop(task)
+                    try:
+                        task.result()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        if _is_auth_error(error) or isinstance(error, (GooglePermanentUploadError, StagingCapacityError)):
+                            detail = ("帳號登入失效 · 請到設定頁重新連接後重試"
+                                      if _is_auth_error(error) else "搬運已停止；暫存和續傳進度保留，請檢查空間或權限")
+                            await self.db.update_transfer_job(job_id, status="failed",
+                                error_message=_error_message(error)[:2000], status_detail=detail, speed_bps=0)
+                            return None
+                        log.warning("pipeline file %s failed (%s)", f["id"], type(error).__name__)
+                        errors.append(_error_message(error))
+            return errors
+        finally:
+            # Includes children waiting for disk/download/upload admission. A
+            # pause/delete/restart cannot finish while any writer is still live.
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def request_cancel(self, job_id: int) -> None:
         """Cancel in-flight asyncio task for job (BUG-11)."""
@@ -590,6 +680,7 @@ class Worker:
         base_path: str,
         job_tmp: Path,
         share_meta: dict[str, Any],
+        pipeline: PipelineProgress | None = None,
     ) -> None:
         settings = get_settings()
         file_id = f["id"]
@@ -624,13 +715,18 @@ class Worker:
                 fields["local_path"] = str(checkpoint)
             await self.db.update_file(file_id, **fields)
 
+        download_owned = upload_owned = False
+        download_started = upload_started = 0.0
         try:
+            if pipeline:
+                await pipeline.resources.download_slot.acquire()
+                download_owned = True
+                await pipeline.report(file_id, "downloading", force=True)
+                download_started = time.monotonic()
             await self.db.update_file(file_id, status="downloading", error_message="")
-            await self.db.update_job(
-                job_id,
-                status="downloading",
-                status_detail=f"下載中: {sf.relative_path or sf.name}",
-            )
+            if not pipeline:
+                await self.db.update_job(job_id, status="downloading", speed_bps=0,
+                    status_detail=f"下載中: {sf.relative_path or sf.name}")
 
             if final_path.exists() and sf.size > 0 and final_path.stat().st_size > sf.size:
                 # This directory contains only regenerable transfer staging.
@@ -670,7 +766,7 @@ class Worker:
                 else:
                     conns = max(1, min(8, settings.download_connections))
 
-                speed_state = {"t0": time.monotonic(), "b0": 0, "last": 0.0}
+                speed_state = {"t0": time.monotonic(), "b0": have_on_disk, "last": 0.0}
                 cancel_flag = {"cancelled": False}
 
                 def _fmt_bytes(n: int) -> str:
@@ -688,11 +784,11 @@ class Worker:
                     if now - getattr(dl_cb, "_last_cancel", 0) >= 3.0:
                         dl_cb._last_cancel = now  # type: ignore[attr-defined]
                         j = await self.db.get_job(job_id)
-                        if j and j["status"] == "cancelled":
+                        if not j or j["status"] in ("cancelled", "paused", "deleted", "awaiting_selection"):
                             cancel_flag["cancelled"] = True
                             raise RuntimeError("任務已取消")
                     dt = max(0.001, now - speed_state["t0"])
-                    bps = (done - speed_state["b0"]) / dt
+                    bps = max(0.0, (done - speed_state["b0"]) / dt)
                     if now - speed_state["t0"] > 3:
                         speed_state["t0"] = now
                         speed_state["b0"] = done
@@ -705,8 +801,16 @@ class Worker:
                     if tot > 0 and (not sf.size or tot == sf.size):
                         upd["size"] = tot
                     await self.db.update_file(file_id, **upd)
+                    if pipeline and not sf.size:
+                        # Unknown-length responses are exclusive, with a live
+                        # reserve check rather than unlimited disk consumption.
+                        if (free_bytes(job_tmp) < settings.download_chunk_size + pipeline.resources.reserve
+                                or pipeline.resources.staged_bytes() > pipeline.resources.max_bytes):
+                            raise StagingCapacityError("未知大小文件達到暫存或磁碟安全上限；進度已保留")
                     tot_ui = tot or sf.size or done
-                    if now - getattr(dl_cb, "_last_job", 0) >= 0.8:
+                    if pipeline:
+                        await pipeline.report(file_id, "downloading", bps)
+                    elif now - getattr(dl_cb, "_last_job", 0) >= 0.8:
                         dl_cb._last_job = now  # type: ignore[attr-defined]
                         prog = await self.db.recompute_job_progress(job_id)
                         pct = (100.0 * done / tot_ui) if tot_ui else 0
@@ -724,10 +828,11 @@ class Worker:
                     u = await source.prepare_download(sf, share_meta)
                     await self.db.update_file(file_id, download_url=u)
                     have = downloaded_bytes_on_disk(part_path, sf.size)
-                    await self.db.update_job(
-                        job_id,
-                        status_detail=f"直鏈刷新後續傳 · 已 {_fmt_bytes(have)}: {sf.name}",
-                    )
+                    if pipeline:
+                        await pipeline.report(file_id, "downloading", force=True)
+                    else:
+                        await self.db.update_job(job_id,
+                            status_detail=f"直鏈刷新後續傳 · 已 {_fmt_bytes(have)}: {sf.name}")
                     return u
 
                 async def refresh_request() -> tuple[str, dict[str, str]]:
@@ -757,10 +862,11 @@ class Worker:
                     try:
                         if attempt > 0:
                             url = await refresh_url()
-                            await self.db.update_job(
-                                job_id,
-                                status_detail=f"網路中斷，重新取鏈續傳 ({attempt + 1}/6): {sf.name}",
-                            )
+                            if pipeline:
+                                await pipeline.report(file_id, "downloading", force=True)
+                            else:
+                                await self.db.update_job(job_id,
+                                    status_detail=f"網路中斷，重新取鏈續傳 ({attempt + 1}/6): {sf.name}")
                         await do_dl(url)
                         last_err = None
                         break
@@ -808,6 +914,20 @@ class Worker:
                 raise RuntimeError(
                     f"下載不完整，拒絕上傳（大小不符）: {size_now}/{sf.size} bytes ({sf.name})"
                 )
+            if pipeline:
+                log.info("pipeline-stage file=%s phase=download seconds=%.3f bytes=%s",
+                         file_id, time.monotonic() - download_started, size_now)
+                # Keep the staging lease while waiting for verified delivery.
+                # Releasing ONLY the download slot lets the next file prefetch.
+                pipeline.resources.download_slot.release()
+                download_owned = False
+                await self.db.update_file(file_id, status="queued", local_path=str(local_upload),
+                    downloaded_bytes=size_now, size=sf.size or size_now)
+                await pipeline.report(file_id, "buffered", force=True)
+                await pipeline.resources.upload_slot.acquire()
+                upload_owned = True
+                await pipeline.report(file_id, "uploading", force=True)
+                upload_started = time.monotonic()
             await self.db.update_file(
                 file_id,
                 status="uploading",
@@ -815,11 +935,9 @@ class Worker:
                 downloaded_bytes=size_now,
                 size=sf.size or size_now,
             )
-            await self.db.update_job(
-                job_id,
-                status="uploading",
-                status_detail=f"上傳中: {sf.name}",
-            )
+            if not pipeline:
+                await self.db.update_job(job_id, status="uploading", speed_bps=0,
+                    status_detail=f"上傳中: {sf.name}")
 
             from app.util_paths import sanitize_rel_path
 
@@ -837,10 +955,10 @@ class Worker:
                 bps = 0.0
                 # BUG-11: honor cancel during upload
                 j = await self.db.get_job(job_id)
-                if j and j["status"] == "cancelled":
+                if not j or j["status"] in ("cancelled", "paused", "deleted", "awaiting_selection"):
                     raise RuntimeError("任務已取消")
                 await self.db.update_file(file_id, uploaded_bytes=done)
-                prog = await self.db.recompute_job_progress(job_id)
+                prog = await self.db.recompute_job_progress(job_id) if not pipeline else 0.0
                 now = time.monotonic()
                 st = getattr(ul_cb, "_st", None)
                 if st is None:
@@ -849,16 +967,15 @@ class Worker:
                 else:
                     dt = now - st["t"]
                     if dt >= 1:
-                        bps = (done - st["b"]) / dt
+                        bps = max(0.0, (done - st["b"]) / dt)
                         ul_cb._st = {"t": now, "b": done}  # type: ignore[attr-defined]
                 tot = total or size_now or 1
                 pct = 100.0 * done / tot
-                await self.db.update_job(
-                    job_id,
-                    progress=prog,
-                    speed_bps=bps,
-                    status_detail=f"上傳 {filename} · {pct:.1f}% · {_fmt_speed(bps)}",
-                )
+                if pipeline:
+                    await pipeline.report(file_id, "uploading", bps)
+                else:
+                    await self.db.update_job(job_id, progress=prog, speed_bps=bps,
+                        status_detail=f"上傳 {filename} · {pct:.1f}% · {_fmt_speed(bps)}")
 
             # OneDrive large uploads may need a few full-session retries
             meta_up: dict[str, Any] = {}
@@ -866,10 +983,11 @@ class Worker:
             for up_try in range(4):
                 try:
                     if up_try > 0:
-                        await self.db.update_job(
-                            job_id,
-                            status_detail=f"上傳重試 ({up_try + 1}/4): {filename}",
-                        )
+                        if pipeline:
+                            await pipeline.report(file_id, "uploading", force=True)
+                        else:
+                            await self.db.update_job(job_id,
+                                status_detail=f"上傳重試 ({up_try + 1}/4): {filename}")
                         # refresh OneDrive token if applicable
                         if "OneDrive" in type(sink).__name__:
                             try:
@@ -939,6 +1057,9 @@ class Worker:
                 pcloud_path=final_remote,
                 meta=delivery_meta,
             )
+            if pipeline:
+                log.info("pipeline-stage file=%s phase=upload seconds=%.3f bytes=%s",
+                         file_id, time.monotonic() - upload_started, size_final)
             # cleanup tmp leftovers (LocalSink already moved the main file — do not delete dest)
             try:
                 if not is_local and local_upload.exists():
@@ -977,6 +1098,8 @@ class Worker:
             raise
         except Exception as e:
             msg = _error_message(e)
+            if pipeline and (_is_auth_error(e) or isinstance(e, (GooglePermanentUploadError, StagingCapacityError))):
+                pipeline.abort(e)
             # Parallel slices report in-flight bytes for a responsive UI, but
             # only metadata-marked ranges survive a retry. Reconcile the DB on
             # every abort so a 412/cancel never leaves a misleading percentage.
@@ -985,3 +1108,9 @@ class Worker:
                 raise
             await record_resume_state("failed", msg[:1500])
             raise
+        finally:
+            if pipeline:
+                if download_owned:
+                    pipeline.resources.download_slot.release()
+                if upload_owned:
+                    pipeline.resources.upload_slot.release()

@@ -70,6 +70,9 @@ async def system_status(_: None = Depends(require_auth)):
         "disk_free_gb": round(free / 1024 / 1024 / 1024, 2),
         "download_connections": s.download_connections,
         "max_concurrent_jobs": s.max_concurrent_jobs,
+        "transfer_mode": "pipeline" if s.transfer_prefetch_files > 1 else "serial",
+        "transfer_prefetch_files": max(1, min(3, s.transfer_prefetch_files)),
+        "transfer_staging_bytes": s.transfer_staging_bytes,
         "providers": {
             "pcloud": "pcloud" in providers,
             "quark": "quark" in providers,

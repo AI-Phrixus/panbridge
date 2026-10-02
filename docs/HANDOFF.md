@@ -1,6 +1,6 @@
 # PanBridge 交接手冊（新帳號接手必讀）
 
-> 倉庫版本：**v0.5.4 · UI 1**（後端以 `/api/health` 為準）
+> 倉庫版本：**v0.5.5 · UI 1**（後端以 `/api/health` 為準）
 >
 > 最後更新：2026-10-02
 > 目的：讓**全新 GitHub / 開發環境**在不依賴舊對話上下文的情況下，能接手運維與開發。
@@ -8,6 +8,8 @@
 ---
 
 ### 最新增量與待辦
+
+2026-10-02 v0.5.5：受控磁碟預取流水線已實作；1 路下載／1 路上傳可重疊，最多3個在途文件、64 GiB 控制預算，安全留量不縮水，保留失敗文件／斷點。Google 交付驗證不降低；沒有 DB schema 改動。本次生產發布及真實重疊結果見 STATUS；設計、紅藍軍測試、模擬／真實速度區分與復原見 [PIPELINE_REVIEW.md](PIPELINE_REVIEW.md)。
 
 2026-10-02 17:55 日本時間：原網址 `https://panbridge.tdtc.indevs.in/` 已在 Mac／WARP 實測恢復。Network Phishing Block 僅排除本站精確 SNI 且目的埠 443；Block 仍啟用、順序 1，獨立 Malware Block 未變。完整表達式與驗收見 [STATUS.md](STATUS.md)。WARP Connected／healthy，健康與登入頁 200、未登入任務 API 401，內建瀏覽器實際已登入任務列表成功。不要把下方較早的「舊網址仍不可用」當成現在狀態；候選 workers.dev 遷移依然未完成，原 Google 回呼與公開來源保持。
 

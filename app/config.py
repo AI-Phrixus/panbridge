@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     baidu_download_connections: int = 4
     # Keep free space buffer when downloading (bytes)
     disk_reserve_bytes: int = 2 * 1024 * 1024 * 1024
+    # Cloud delivery overlaps one downloader with one uploader. Set 1 to restore
+    # serial processing without changing or discarding any checkpoints.
+    transfer_prefetch_files: int = 3
+    transfer_staging_bytes: int = 64 * 1024**3
     pcloud_api_host: str = "eapi.pcloud.com"
     pcloud_default_path: str = "/PanBridge"
     session_max_age: int = 60 * 60 * 24 * 30
@@ -63,7 +67,7 @@ class Settings(BaseSettings):
     stream_token_max_age: int = 60 * 60 * 24 * 7
     # Optional canonical external URL, e.g. https://panbridge.example.com.
     public_base_url: str = ""
-    app_version: str = "0.5.4"
+    app_version: str = "0.5.5"
 
     @property
     def data_path(self) -> Path:

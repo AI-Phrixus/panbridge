@@ -188,6 +188,20 @@ class Database:
         row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def update_transfer_job(self, job_id: int, **fields: Any) -> bool:
+        """Atomic control gate: a late callback cannot resurrect pause/delete."""
+        bad = set(fields) - self._JOB_COLS
+        if bad:
+            raise ValueError(f"invalid job fields: {bad}")
+        fields["updated_at"] = _now()
+        cols = ", ".join(f"{key}=?" for key in fields)
+        cur = await self.conn.execute(
+            f"UPDATE jobs SET {cols} WHERE id=? AND status IN ('queued','downloading','uploading')",
+            (*fields.values(), job_id),
+        )
+        await self.conn.commit()
+        return cur.rowcount == 1
+
     async def list_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
         cur = await self.conn.execute("SELECT * FROM jobs WHERE status != 'deleted' ORDER BY id DESC LIMIT ?", (limit,))
         rows = await cur.fetchall()
