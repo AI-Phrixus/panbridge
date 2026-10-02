@@ -1,5 +1,16 @@
 # 生產狀態快照（可公開）
 
+## 2026-10-02 v0.5.5：Oracle 磁碟預取流水線已部署
+
+- 使用者明確要求擴容後正式優化下載模式。本次程式提交 `23e8837` 已推送 GitHub main、部署 Oracle；原網址 HTTPS `/api/health` 與 loopback 均回報 0.5.5，panbridge／cloudflared active，關鍵六個程式文件本地／Oracle SHA-256 全同。
+- 真實設定：prefetch 3、staging 68,719,476,736 bytes（64 GiB）、reserve 2,147,483,648 bytes（2 GiB）、download connections 6、Baidu 4；max jobs 原設定仍為2。流水線的下載／上傳各1與3件預算在 Worker 跨任務共用，不把每任務連線乘倍。
+- 本機與 Oracle 的獨立乾淨發布目錄均213程式測試全通過，ops安全9項通過；本機UI／入口25項通過。紅軍找到並修復未知大小漏算失敗留存暫存及收尾狀態競態；最後hard-fail latch復審5項通過。詳見 [PIPELINE_REVIEW.md](PIPELINE_REVIEW.md)。
+- 安全切換短暫停止／啟動下載服務以落盤，沒有按resume/retry或重建任務。切換後確認先前296件#16 done及405件#18 done的ID、大小、下載／上傳bytes全保留；#16的14個既有failed沒有重新排隊，兩任務清單與帳號綁定不變。
+- 21:17日本時間唯讀核對：#16 downloading 53.51%，297／935 done，已交付36,526,125,708 bytes，14 failed、1 downloading、623 queued。#18仍405／405 done、25,976,502,866 bytes。free147,653,750,784 bytes。
+- 任務詳情已顯示流水線上下行／等待數；已完整預取文件可直接續上傳。來源暫時慢於模擬，不宣稱實際網速已提升某倍。已記錄第一個發布後完成文件的兩階段耗時，這些包含取鏈／續傳，不能當同檔改動前後純CDN測速。
+- 備份仍474／477 ready、3 not done且帳號一致，未重複查數百件Google、未清理Mac。完整搬運／Google全量SHA-256／Windows和Infuse播放仍未完成，不由本次發布代替。
+- 復原包在Oracle私有`/home/ubuntu/panbridge-backups/20261002-v055/code-before.tgz`；只備份舊程式與必要任務欄位快照。沒有DB schema改動、沒有匯出正式DB或憑證；若復原只能撤回程式，不能覆蓋已新增交付紀錄。發布中一條同步方向錯誤的組合命令被安全檢查攔下，未執行；先恢復舊服務後改為僅在Oracle內同步新版程式，無資料外傳。
+
 ## 2026-10-02 17:55 日本時間：原網址在 Mac／WARP 恢復
 
 - 依使用者「修復這個問題」「請繼續」，17:47 在既有 Network Phishing Block 表達式加入只限 `panbridge.tdtc.indevs.in` 且目的埠 443 的排除條件。保存後讀回：`any(net.fqdn.security_category[*] in {131}) and not(net.sni.host == "panbridge.tdtc.indevs.in" and net.dst.port == 443)`；仍為 Block、啟用、順序 1。獨立 Malware Block 仍啟用、順序 2、未改動，先前 DNS 精確主機允許保留。

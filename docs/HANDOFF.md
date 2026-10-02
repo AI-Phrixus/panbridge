@@ -11,6 +11,8 @@
 
 2026-10-02 v0.5.5：受控磁碟預取流水線已實作；1 路下載／1 路上傳可重疊，最多3個在途文件、64 GiB 控制預算，安全留量不縮水，保留失敗文件／斷點。Google 交付驗證不降低；沒有 DB schema 改動。本次生產發布及真實重疊結果見 STATUS；設計、紅藍軍測試、模擬／真實速度區分與復原見 [PIPELINE_REVIEW.md](PIPELINE_REVIEW.md)。
 
+正式版本已部署，原 HTTPS health 0.5.5、兩服務 active、程式雜湊一致；#16原296件done／14件failed與#18原405件done核對保留。Oracle復原僅用`panbridge-backups/20261002-v055/code-before.tgz`撤回程式，不還原DB（無schema改動，避免抹去新交付）。21:17 #16已297／935 done、53.51%，Mac備份仍474／477 ready，未清理。不要為部署對#16按resume/retry來擅自重播failed。
+
 2026-10-02 17:55 日本時間：原網址 `https://panbridge.tdtc.indevs.in/` 已在 Mac／WARP 實測恢復。Network Phishing Block 僅排除本站精確 SNI 且目的埠 443；Block 仍啟用、順序 1，獨立 Malware Block 未變。完整表達式與驗收見 [STATUS.md](STATUS.md)。WARP Connected／healthy，健康與登入頁 200、未登入任務 API 401，內建瀏覽器實際已登入任務列表成功。不要把下方較早的「舊網址仍不可用」當成現在狀態；候選 workers.dev 遷移依然未完成，原 Google 回呼與公開來源保持。
 
 當次 #18 已完成 405／405、25,976,502,866 bytes；#16 51.46%、278／935 done，13 failed，其他文件繼續。備份映射 474／477 ready、3 not done，Mac 副本仍保留。沒有重啟服務、重排任務或清理文件。網頁恢復不等同全部搬運／Google 全量雜湊／外部播放器／Windows 已驗收。
