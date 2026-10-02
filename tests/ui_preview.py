@@ -30,6 +30,7 @@ class Preview(BaseHTTPRequestHandler):
         self.end_headers();self.wfile.write(body)
     def do_GET(self):
         path=urlsplit(self.path).path
+        if path=="/static/task-view.json":return self.respond({"schema":1,"first_job_id":9001})
         if path=="/": return self.respond(env.get_template("index.html").render(),"text/html; charset=utf-8")
         if path in ("/tasks/9001","/tasks/9002"):
             return self.respond(env.get_template("task.html").render(job_id=int(path.rsplit('/',1)[1])),"text/html; charset=utf-8")

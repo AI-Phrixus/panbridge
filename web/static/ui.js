@@ -15,7 +15,7 @@
     return fallback;
   }
   async function request(url, options = {}) {
-    const {timeoutMs = 15000, ...init} = options;
+    const {timeoutMs = 15000, allowNotFound = false, ...init} = options;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -24,6 +24,7 @@
         if (root.location) root.location.href = '/login';
         throw new Error('登入已失效，請重新登入。');
       }
+      if (response.status === 404 && allowNotFound && (!init.method || init.method === 'GET')) return null;
       let data;
       try { data = await response.json(); }
       catch { throw new Error(response.ok
@@ -40,6 +41,26 @@
       }
       throw error;
     } finally { clearTimeout(timer); }
+  }
+  async function loadTaskView() {
+    const config = await request('/static/task-view.json', {allowNotFound:true});
+    if (config === null) return {firstJobId:1};
+    if (config.schema !== 1 || !Number.isSafeInteger(config.first_job_id) || config.first_job_id < 1) {
+      throw new Error('任務列表設定異常；未更改任何搬運，請聯絡管理員。');
+    }
+    return {firstJobId:config.first_job_id};
+  }
+  function taskRows(jobs, firstJobId = 1) {
+    if (!Array.isArray(jobs) || !Number.isSafeInteger(firstJobId) || firstJobId < 1) {
+      throw new Error('任務列表格式異常，請刷新確認。');
+    }
+    const unique = new Map();
+    for (const job of jobs) {
+      if (!job || !Number.isSafeInteger(job.id) || job.id < firstJobId || job.status === 'deleted' || job.destination === 'onedrive') continue;
+      // Display order is not a database ID. Never use it for mutations or URLs.
+      if (!unique.has(job.id)) unique.set(job.id, job);
+    }
+    return [...unique.values()].sort((a,b)=>a.id-b.id).map((job,index)=>({...job,displayNumber:index+1}));
   }
   function poll(task, options = {}) {
     const interval = options.interval || 3000;
@@ -123,7 +144,7 @@
       box.onkeydown = e => {if(e.key === 'Escape') finish(false);};
     });
   }
-  const api = {esc,progress,statusLabel,badge,request,poll,once,notice,render,invalidate,confirmAction};
+  const api = {esc,progress,statusLabel,badge,request,loadTaskView,taskRows,poll,once,notice,render,invalidate,confirmAction};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.PB = api;
 })(typeof window !== 'undefined' ? window : globalThis);

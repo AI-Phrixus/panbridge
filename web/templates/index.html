@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PanBridge</title>
   <link rel="stylesheet" href="/static/style.css?v=0.5.4-ui1" />
-  <script src="/static/ui.js?v=0.5.4-ui1" defer></script>
+  <script src="/static/ui.js?v=0.5.5-ui2" defer></script>
 </head>
 <body>
   <div class="wrap">
@@ -59,12 +59,13 @@
 
     <div class="card">
       <h2>任務列表</h2>
+      <p class="muted">依建立順序排列，列表序號從 1 開始；整理列表不會重置下載進度。</p>
       <p id="jobsMeta" class="muted" style="margin-top:0"></p>
       <p id="refresh-status" class="muted" role="status"></p>
       <button class="secondary" onclick="jobsPoll.refresh()">立即刷新</button>
       <div class="table-scroll"><table>
         <thead>
-          <tr><th>ID</th><th>來源</th><th>標題 / 連結</th><th>狀態</th><th>進度</th><th></th></tr>
+          <tr><th>序號</th><th>來源</th><th>標題 / 連結</th><th>狀態</th><th>進度</th><th></th></tr>
         </thead>
         <tbody id="jobs"></tbody>
       </table></div>
@@ -74,6 +75,9 @@
     const $ = s => document.querySelector(s);
     let epoch=0;
     const activeControls=new Set();
+    let taskView;
+    const displayNumbers=new Map();
+    const taskLabel=id=>displayNumbers.has(id)?'任務 #'+displayNumbers.get(id):'此任務';
 
     function fmtSpeed(bps) {
       bps = Number(bps) || 0;
@@ -110,7 +114,7 @@
             ? (' · pCloud <b>' + esc(s.pcloud_free_gb) + 'G</b>')
             : '';
           el.innerHTML =
-            'v' + esc(s.version || '?') + ' · UI 1'+
+            'v' + esc(s.version || '?') + ' · UI 2'+
             ' · 磁盤 <b>' + esc(s.disk_free_gb ?? '?') + 'G</b>' +
             pc +
             ' · 併發 ' + esc(s.max_concurrent_jobs ?? '?') +
@@ -119,16 +123,18 @@
             ' 夸克' + ok(p.quark) +
             ' 百度' + ok(p.baidu);
           const ver = document.getElementById('appver');
-          if (ver) ver.textContent = 'v' + (s.version || '')+' · UI 1';
+          if (ver) ver.textContent = 'v' + (s.version || '')+' · UI 2';
         }
     }
 
     async function loadJobs() {
         if(activeControls.size)return;
         const revision=epoch;
+        if(!taskView)taskView=await PB.loadTaskView();
         const data = await PB.request('/api/tasks');
         if(revision!==epoch)return;
-        const jobs = data.jobs || [];
+        const jobs = PB.taskRows(data.jobs,taskView.firstJobId);
+        displayNumbers.clear();for(const job of jobs)displayNumbers.set(job.id,job.displayNumber);
         const meta = $('#jobsMeta');
         const count=s=>jobs.filter(j=>j.status===s).length;
         if (meta) meta.textContent = '共 '+jobs.length+' 個任務 · 正在搬運 '+(count('downloading')+count('uploading'))+' · 等待選檔 '+count('awaiting_selection')+' · 已暫停 '+count('paused')+' · 需要處理 '+count('failed');
@@ -166,7 +172,7 @@
           actions += '<button class="secondary danger" onclick="control(' + j.id + ',\'delete\')">刪除任務</button>';
           return (
             '<tr>' +
-            '<td><a href="/tasks/' + j.id + '">#' + j.id + '</a></td>' +
+            '<td><a href="/tasks/' + j.id + '">#' + j.displayNumber + '</a></td>' +
             '<td>' + esc(j.source_type) + (j.destination ? '<div class="muted" style="font-size:.75rem">' + esc(retiredTarget ? '舊目標（已停用）' : j.destination) + '</div>' : '') + '</td>' +
             '<td><div>' + esc(j.title || '') + '</div>' +
             '<div class="muted" style="word-break:break-all;font-size:.8rem">' + esc(j.share_url) + '</div>' +
@@ -183,12 +189,13 @@
       await control(id, 'retry');
     };
     window.control = async function(id, action) {
-      if(action==='delete'&&!await PB.confirmAction('移除任務 #'+id+' 並停止搬運？Google Drive 文件不刪除，未完成暫存先保留。','確認刪除任務'))return;
-      if(action==='cancel'&&!await PB.confirmAction('取消任務 #'+id+'？已完成的雲端文件保留，未完成的搬運會停止。','確認取消搬運'))return;
+      const label=taskLabel(id);
+      if(action==='delete'&&!await PB.confirmAction('移除'+label+'並停止搬運？只清理本站記錄；已交付文件和未完成暫存保留。','確認刪除任務'))return;
+      if(action==='cancel'&&!await PB.confirmAction('取消'+label+'？已交付文件保留，未完成的搬運會停止。','確認取消搬運'))return;
       await PB.once('job:'+id,async()=>{
         activeControls.add(id);epoch++;
         $('#jobs').querySelectorAll('button').forEach(el=>el.disabled=true);
-        try{await PB.request('/api/tasks/'+id+(action==='delete'?'':'/'+action),{method:action==='delete'?'DELETE':'POST'});PB.notice('任務 #'+id+'：'+({pause:'已暫停',resume:'已接續',retry:'已排隊重試',cancel:'已取消',delete:'已移除記錄'}[action]||'操作完成')+'。','success');}
+        try{await PB.request('/api/tasks/'+id+(action==='delete'?'':'/'+action),{method:action==='delete'?'DELETE':'POST'});PB.notice(label+'：'+({pause:'已暫停',resume:'已接續',retry:'已排隊重試',cancel:'已取消',delete:'已移除記錄'}[action]||'操作完成')+'。','success');}
         catch(e){PB.notice(e.message,'error');}
         finally{activeControls.delete(id);epoch++;$('#jobs').querySelectorAll('button').forEach(el=>el.disabled=false);await jobsPoll.refresh();}
       });
@@ -200,7 +207,7 @@
         if(!url){PB.notice('雲端資料夾尚未建立。');return;}
         const target=new URL(url,location.origin);
         if(target.protocol!=='https:'&&target.origin!==location.origin){PB.notice('雲端位置不是安全網址。','error');return;}
-        PB.notice('任務 #'+id+' 的雲端位置已取得。');const link=document.createElement('a');link.href=target.href;link.target='_blank';link.rel='noopener noreferrer';link.textContent='開啟雲端位置';link.className='btn secondary';$('#notice').append(' ',link);
+        PB.notice(taskLabel(id)+' 的雲端位置已取得。');const link=document.createElement('a');link.href=target.href;link.target='_blank';link.rel='noopener noreferrer';link.textContent='開啟雲端位置';link.className='btn secondary';$('#notice').append(' ',link);
       } catch (e) { PB.notice(e.message,'error'); }
     };
     window.cancel = async function (id) {
@@ -231,7 +238,7 @@
         })
       });
       if(!Array.isArray(data.job_ids)||!data.job_ids.length)throw new Error('尚未確認任務編號，請刷新查看，不要連續提交。');
-      $('#createMsg').textContent = '已建立任務：'+data.job_ids.join(', ')+(selectionRequested?'；請在任務中選檔後開始搬運。':'；已排隊搬運。');
+      $('#createMsg').textContent = '已建立 '+data.job_ids.length+' 個任務'+(selectionRequested?'；請在任務中選檔後開始搬運。':'；已排隊搬運。');
       if($('#links').value.trim()===text)$('#links').value = '';
       epoch++;await jobsPoll.refresh();
       }catch(error){$('#createMsg').textContent=error.message;}

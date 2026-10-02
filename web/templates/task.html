@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>任務 · PanBridge</title>
   <link rel="stylesheet" href="/static/style.css?v=0.5.4-ui1" />
-  <script src="/static/ui.js?v=0.5.4-ui1" defer></script>
+  <script src="/static/ui.js?v=0.5.5-ui2" defer></script>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span> <small class="ui-version">選檔 · 暫停 · 雲端搬運 · UI 1</small></div>
+      <div class="logo">Pan<span>Bridge</span> <small class="ui-version">選檔 · 暫停 · 雲端搬運 · UI 2</small></div>
       <nav>
         <a href="/">← 任務列表</a>
         <a href="/settings">帳號設定</a>
@@ -22,7 +22,8 @@
       <div class="actions"><button id="confirm-yes" type="button">確認</button><button id="confirm-no" class="secondary" type="button">返回</button></div>
     </section>
     <div class="card">
-      <h2>任務 #<span id="jid">{{ job_id }}</span></h2>
+      <h2 id="task-heading">任務明細</h2>
+      <p id="task-title" class="muted"></p>
       <div id="meta" class="muted"></div>
       <div class="actions" id="jobActions"></div>
       <section id="google-copy-confirm" hidden aria-label="重新搬運確認">
@@ -34,7 +35,7 @@
       <p id="refresh-status" class="muted" role="status"></p>
       <button class="secondary" type="button" onclick="jobPoll.refresh()">立即刷新</button>
     </div>
-    <div class="card">
+    <div class="card" id="task-files">
       <h3>檔案</h3>
       <p class="muted">Google Drive 私人文件：Infuse 請在「新增檔案 → 新增共享」連接 Google Drive；Windows／Mac 的 VLC 可開啟 Google Drive 電腦版中的串流文件。不要把私人文件改為公開分享。Oracle 不轉送已交付的影片。</p>
       <div id="selection" hidden>
@@ -66,6 +67,8 @@
     const pageSize = 100;
     let acting = false;
     let epoch = 0;
+    let taskView;
+    let taskIndexReady=false;
     function fmt(n){
       n = Number(n)||0;
       if (n < 1024) return n+' B';
@@ -101,8 +104,23 @@
     async function load(){
       if(acting)return;
       const revision=epoch;
+      if(!taskView)taskView=await PB.loadTaskView();
+      if(!taskIndexReady){
+        const listing=await PB.request('/api/tasks');
+        if(revision!==epoch)return;
+        const shown=PB.taskRows(listing.jobs,taskView.firstJobId).find(j=>j.id===jobId);
+        if(!shown){
+          document.getElementById('task-heading').textContent='舊項目記錄';
+          document.getElementById('task-files').hidden=true;
+          PB.notice('這份記錄不在目前的新項目列表中。歷史校驗資料仍保留，請返回任務列表。');
+          return;
+        }
+        document.getElementById('task-heading').textContent='任務 #'+shown.displayNumber;
+        taskIndexReady=true;
+      }
       const {job, files} = await PB.request('/api/tasks/'+jobId);
       if(revision!==epoch)return;
+      document.getElementById('task-title').textContent=job.title||'';
       currentStatus = job.status; currentFiles = files || [];
       const known=new Set(currentFiles.map(f=>f.id));for(const id of selectedIds)if(!known.has(id))selectedIds.delete(id);
       document.getElementById('selection').hidden = job.status !== 'awaiting_selection';
@@ -181,7 +199,7 @@
     async function mutate(action){return PB.once('job',async()=>{acting=true;epoch++;document.querySelectorAll('#jobActions button,#start-selection,#google-copy-submit').forEach(el=>el.disabled=true);try{await action();}catch(e){PB.notice(e.message,'error');}finally{acting=false;epoch++;document.querySelectorAll('#jobActions button,#start-selection,#google-copy-submit').forEach(el=>el.disabled=false);await jobPoll.refresh();}});}
     async function confirmSelection(){if(!selectedIds.size){PB.notice('請至少選一個文件。','error');return;}const ids=[...selectedIds];await mutate(async()=>{await PB.request('/api/tasks/'+jobId+'/selection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_ids:ids})});PB.notice('已提交選檔，雲端將依序搬運。','success');});}
     async function controlJob(action){
-      if(action==='delete' && !await PB.confirmAction('移除任務並停止搬運？Google Drive 文件不會刪除，未完成的服務器暫存先保留。','確認刪除任務'))return;
+      if(action==='delete' && !await PB.confirmAction('移除任務並停止搬運？只清理本站記錄；已交付文件和未完成暫存保留。','確認刪除任務'))return;
       if(action==='cancel' && !await PB.confirmAction('取消此任務？已完成的雲端文件保留，未完成的搬運會停止。','確認取消搬運'))return;
       await mutate(async()=>{await PB.request('/api/tasks/'+jobId+(action==='delete'?'':'/'+action),{method:action==='delete'?'DELETE':'POST'});if(action==='delete'){location.href='/';return;}PB.notice(action==='pause'?'已暫停；已完成文件保留，可按繼續恢復。':action==='resume'?'已接續搬運。':'操作已完成。','success');});
     }

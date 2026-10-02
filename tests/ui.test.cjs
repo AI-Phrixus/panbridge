@@ -89,6 +89,97 @@ test('page scripts parse, use bounded polling, and do not create native modal di
     new vm.Script(source);
     assert.doesNotMatch(source,/\b(?:alert|confirm|setInterval)\s*\(/);
     assert.match(source,/PB\.poll/);assert.match(html,/role="status"/);
-    assert.match(html,/action-confirm/);assert.match(html,/ui\.js\?v=0\.5\.4-ui1/);
+    assert.match(html,/action-confirm/);assert.match(html,/ui\.js\?v=0\.5\.5-ui2/);
   }
+});
+
+test('new project rows start at one without changing IDs, source records or progress',()=>{
+  const jobs=[{id:18,destination:'google',status:'done',progress:100},
+    {id:13,destination:'onedrive',status:'failed'},
+    {id:12,destination:'pcloud',status:'failed'},
+    {id:17,destination:'google',status:'deleted'},
+    {id:16,destination:'google',status:'downloading',progress:53.89},
+    {id:18,destination:'google',status:'done',progress:100}];
+  const before=JSON.stringify(jobs), rows=PB.taskRows(jobs,16);
+  assert.deepEqual(rows.map(j=>[j.id,j.displayNumber,j.progress]),[[16,1,53.89],[18,2,100]]);
+  assert.equal(JSON.stringify(jobs),before);
+  assert.notEqual(rows[0],jobs[4]);
+  assert.deepEqual(PB.taskRows([...jobs,{id:19,destination:'pcloud',status:'queued'}],16).map(j=>j.id),[16,18,19]);
+});
+test('retired targets, deleted tasks and invalid IDs never enter the new view',()=>{
+  assert.deepEqual(PB.taskRows([{id:21,destination:'onedrive'},{id:'22'},null,{id:23,status:'deleted'}],16),[]);
+  assert.throws(()=>PB.taskRows({},16),/格式異常/);
+  assert.throws(()=>PB.taskRows([],0),/格式異常/);
+  assert.throws(()=>PB.taskRows([],1.5),/格式異常/);
+});
+test('project configuration is optional on fresh installs but invalid configuration fails closed',async t=>{
+  const saved=global.fetch;t.after(()=>{global.fetch=saved;});
+  global.fetch=async()=>({status:404,ok:false});
+  assert.deepEqual(await PB.loadTaskView(),{firstJobId:1});
+  global.fetch=async()=>({status:200,ok:true,json:async()=>({schema:1,first_job_id:16})});
+  assert.deepEqual(await PB.loadTaskView(),{firstJobId:16});
+  for(const first_job_id of [0,-1,1.5,'16',null,Number.MAX_SAFE_INTEGER+1]){
+    global.fetch=async()=>({status:200,ok:true,json:async()=>({schema:1,first_job_id})});
+    await assert.rejects(PB.loadTaskView(),/設定異常/);
+  }
+  global.fetch=async()=>({status:500,ok:false,json:async()=>({detail:'offline'})});
+  await assert.rejects(PB.loadTaskView(),/offline/);
+});
+test('optional configuration 404 handling cannot turn a failed mutation into success',async t=>{
+  const saved=global.fetch;t.after(()=>{global.fetch=saved;});
+  global.fetch=async()=>({status:404,ok:false,json:async()=>({detail:'not found'})});
+  await assert.rejects(PB.request('/api/tasks/16',{method:'DELETE',allowNotFound:true}),/not found/);
+});
+
+function pageFixture(page,jobId=16){
+  const nodes=new Map(), polls=[], requests=[], notices=[];
+  const node=id=>{
+    if(!nodes.has(id))nodes.set(id,{value:'',hidden:false,disabled:false,innerHTML:'',textContent:'',
+      querySelectorAll:()=>[],contains:()=>false});
+    return nodes.get(id);
+  };
+  const jobs=[{id:13,destination:'onedrive',status:'failed'},
+    {id:18,destination:'google',status:'done',progress:100,title:'second'},
+    {id:16,destination:'google',status:'downloading',progress:53.89,title:'first',source_type:'quark'}];
+  const context={document:{querySelector:s=>node(s.replace(/^#/,'')),getElementById:node,querySelectorAll:()=>[]},
+    location:{origin:'https://example.invalid'},URL,Set,Map,console};
+  context.window=context;
+  context.PB={...PB,loadTaskView:async()=>({firstJobId:16}),
+    request:async(url,init={})=>{
+      requests.push({url,method:init.method||'GET'});
+      if(url==='/api/tasks')return {jobs};
+      if(url==='/api/tasks/'+jobId)return {job:jobs.find(j=>j.id===jobId),files:[]};
+      return {ok:true};
+    },render:(el,html)=>{el.innerHTML=html;},notice:text=>notices.push(text),confirmAction:async()=>true,
+    poll:task=>{polls.push(task);return {refresh:task,stop(){}};}};
+  const html=fs.readFileSync(__dirname+'/../web/templates/'+page+'.html','utf8');
+  const source=html.match(/<script type="module">([\s\S]*?)<\/script>/)[1].replace('{{ job_id }}',String(jobId));
+  vm.runInNewContext(source,context);
+  return {context,polls,requests,notices,node};
+}
+test('display task one links to and controls actual task 16, never task one',async()=>{
+  const fixture=pageFixture('index');await fixture.polls[0]();
+  const html=fixture.node('jobs').innerHTML;
+  assert.match(html,/href="\/tasks\/16">#1<\/a>/);
+  assert.match(html,/href="\/tasks\/18">#2<\/a>/);
+  assert.doesNotMatch(html,/href="\/tasks\/13"/);
+  await fixture.context.control(16,'pause');
+  assert.ok(fixture.requests.some(r=>r.url==='/api/tasks/16/pause'&&r.method==='POST'));
+  assert.ok(fixture.requests.every(r=>r.url!=='/api/tasks/1/pause'));
+  assert.match(fixture.notices[0],/任務 #1：已暫停/);
+});
+test('task detail uses the same new sequence while keeping actual request IDs',async()=>{
+  const fixture=pageFixture('task');await fixture.polls[0]();
+  assert.equal(fixture.node('task-heading').textContent,'任務 #1');
+  assert.equal(fixture.node('task-title').textContent,'first');
+  await fixture.context.controlJob('pause');
+  assert.ok(fixture.requests.some(r=>r.url==='/api/tasks/16/pause'&&r.method==='POST'));
+  assert.ok(fixture.requests.every(r=>r.url!=='/api/tasks/1'));
+});
+test('opening a historical task never loads its files or exposes migration controls',async()=>{
+  const fixture=pageFixture('task',13);await fixture.polls[0]();
+  assert.equal(fixture.node('task-heading').textContent,'舊項目記錄');
+  assert.equal(fixture.node('task-files').hidden,true);
+  assert.equal(fixture.node('jobActions').innerHTML,'');
+  assert.ok(fixture.requests.every(r=>r.url!=='/api/tasks/13'));
 });
