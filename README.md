@@ -7,11 +7,13 @@
 
 | | |
 |--|--|
-| **版本** | v0.5.4 · UI 1（後端以 `/api/health` 為準；新域名入口尚待驗收） |
+| **版本** | v0.5.4 · UI 1（後端以 `/api/health` 為準；原網址 Mac／WARP 訪問已恢復，候選新入口未遷移） |
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
 | **核心能力** | 批量連結 · 搜尋選檔 · 暫停／繼續 · 斷點續傳 · 私人 Google Drive 搬運 |
 | **倉庫** | https://github.com/AI-Phrixus/panbridge |
+
+2026-10-02 已在 WARP 保持連線下實測原部署 HTTPS 健康檢查、登入保護及內建瀏覽器任務列表正常。搬運完成／雲端校驗／播放器驗收進度另見 [docs/STATUS.md](docs/STATUS.md)，不以網頁恢復代替全項目完成。
 
 > **新人接手請先讀**  
 > 1. [docs/HANDOFF.md](docs/HANDOFF.md) — 生產環境與交接 checklist  

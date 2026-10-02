@@ -5,6 +5,14 @@ Fixed upstream: `https://panbridge.tdtc.indevs.in` via the existing Tunnel.
 This is a website entry, not a download accelerator or a new storage provider.
 The Oracle download workers and Google Drive permissions remain unchanged.
 
+Update, 2026-10-02 08:55 UTC: the original upstream hostname is accessible from
+the Mac with WARP still connected after a narrowly scoped Gateway Phishing-policy
+exception for that exact SNI and destination port 443. Health and login return
+200, unauthenticated tasks return 401, and the in-app browser renders the real
+authenticated task list. The separate Malware Block remains enabled. Keep the
+original application origin and OAuth callback; this does not accept or migrate
+the candidate Worker, whose earlier production 1101 remains unresolved.
+
 ## Safety boundaries
 
 - HTTPS on both legs; no arbitrary upstream, insecure fallback, or certificate bypass.
@@ -48,11 +56,24 @@ The Oracle download workers and Google Drive permissions remain unchanged.
 
 ## Acceptance / next step
 
-At 04:50 UTC a specific action-time approval was requested for exactly one
-disable/re-enable of this new production URL; it has not been executed.
-After approval, at most one production URL re-registration attempt. If it remains
-broken, do not keep looping on the same platform failure. Preserve the existing
-service and report the concrete remaining hostname/platform requirement.
+Update, 2026-10-02 06:54 UTC: the user explicitly approved the one production URL
+disable/re-enable, and it was completed. Production is enabled again; preview URLs
+remain disabled. Mac and Oracle still receive 500/1101, so do not repeat this toggle.
+Quick Edit read-back remains exactly the local 4,260-character source; its HTTP
+preview returns the expected 302 and security headers. The 14 local tests pass.
+No application origin, OAuth, protection, or download-service settings changed.
+
+A one-shot maintenance-only diagnostic (fixed 503, no upstream or user data) was
+prepared locally, but the remote editor replacement was blocked by action review.
+It has not been written or deployed. A separate explicit approval was requested
+for one diagnostic deployment followed immediately by restoring the verified
+original source. Do not bypass that gate or imply the probe ran.
+
+Historical note, 2026-10-01 04:50 UTC: approval was requested for exactly one
+disable/re-enable. It remained unexecuted then, and was completed on 2026-10-02
+after fresh explicit approval. Since it remains broken, do not keep looping on
+the same platform failure. Preserve the existing service and distinguish observed
+execution-chain differences from an established hostname/platform root cause.
 
 Before switching the application origin, production must pass public health,
 unauthenticated API rejection, login cookie/redirect checks, and browser rendering.

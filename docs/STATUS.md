@@ -1,5 +1,24 @@
 # 生產狀態快照（可公開）
 
+## 2026-10-02 17:55 日本時間：原網址在 Mac／WARP 恢復
+
+- 依使用者「修復這個問題」「請繼續」，17:47 在既有 Network Phishing Block 表達式加入只限 `panbridge.tdtc.indevs.in` 且目的埠 443 的排除條件。保存後讀回：`any(net.fqdn.security_category[*] in {131}) and not(net.sni.host == "panbridge.tdtc.indevs.in" and net.dst.port == 443)`；仍為 Block、啟用、順序 1。獨立 Malware Block 仍啟用、順序 2、未改動，先前 DNS 精確主機允許保留。
+- Mac 實測 WARP 為 Connected／Network healthy；原網址 HTTPS `/api/health` 為 200、版本 0.5.4，`/login` 為 200，未登入 `/api/tasks` 為 401。沒有使用不安全的憑證選項。內建瀏覽器實際載入原網址的已登入任務列表，顯示 Google Drive、選檔、暫停和 UI 1；已通過原網址訪問驗收。
+- 這次精確變更前握手失敗、變更後同 Mac／WARP 成功，支持 Gateway Network 分類攔截是剩餘障礙；未取得歷史分類變更或精確封鎖命中日誌，因此不宣稱已確定最早何時、為何改變分類。
+- 17:55 唯讀核對 #16 downloading 51.46%、278／935 done，已交付 35,127,462,398 bytes；13 份 failed、1 downloading、643 queued。#18 done、405／405，大小及下載／上傳 bytes 均為 25,976,502,866。兩服務 active，free 147,684,950,016 bytes；本次沒有重啟或重排任務。
+- 備份仍 474／477 ready、3 not done、帳號綁定一致；Mac 477 份保留，未重複查 Google API。外部播放器／Windows 實機播放仍屬獨立驗收，不由網站訪問成功代替。
+- 使用入口仍為 `https://panbridge.tdtc.indevs.in/`；候選 workers.dev 遷移沒有完成，Google 回呼與應用程式公開來源保持原網址。私密規則復原資料與前後截圖保存在工作區 `Outputs/network-repair/`。
+
+## 2026-10-02 15:54 日本時間：單次路由核對與失敗文件補傳
+
+- 使用者當次明確批准後，只對 `panbridge.phrixusjhon.workers.dev` 完成一次停用／重新啟用，最後生產開關為 enabled、preview URLs 仍 disabled。沒有改其他網址、DNS、Access、防護、OAuth、公開來源或下載服務。
+- Mac／Oracle 隨後正式 `/api/health` 仍 HTTP 500／1101。Ray：`a441b775edb41be3-NRT`、`a441b7a40a6b23a4-KIX`。正式回應沒有本地入口程式預期的 HSTS／no-referrer 標頭；這是執行鏈差異線索，不是根因確診。
+- Quick Edit 仍顯示 `c1704060` 使用中；完整讀回 4,260 字元與本地 `edge/worker.mjs` 完全相同。HTTP 預覽返回 302 登入跳轉、no-store／HSTS／no-referrer；14 項本地入口測試全部通過，均不代表正式訪問恢復。
+- 計畫用暫時固定 503、無上游／文件／登入的維護回應隔離診斷；正式編輯器改寫被操作審核攔下，尚未寫入或部署。已另問明確批准「一次測試並立即還原」。本地 probe 只在工作區 Outputs，不能當作線上版本。
+- #18 早間讀取為 failed、397／405 done、8 ConnectTimeout。經既有 authenticated loopback retry API 僅重新排隊 8 份未完成文件；操作前後 397 個 done 文件 ID／size 完全相同，不建立新任務。
+- 15:53 #18 已 downloading 96.95%、399／405 done、1 downloading、5 queued、0 failed；#16 downloading 49.73%、263／935 done、11 個既有 failed、1 downloading，其餘660 queued。未中斷 #16 或無限重試。
+- 備份映射 472／477 ready、5 not done、帳號一致，沒有缺失或歧義；未再查數百份 Google API、未刪 Mac 副本。free 147,447,914,496 bytes，兩服務 active。
+
 ## 2026-10-01 17:14 日本時間：備份校驗工具與持續監控授權
 
 - 使用者明確持續授權後续定時唯讀檢查；已更新原 `panbridge` 排程，仍為每 30 分鐘，不新增重複排程或放寬整體安全設定。系統權限流程仍遵守。
