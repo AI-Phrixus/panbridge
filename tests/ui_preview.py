@@ -32,9 +32,12 @@ class Preview(BaseHTTPRequestHandler):
         path=urlsplit(self.path).path
         if path=="/static/task-view.json":return self.respond({"schema":1,"first_job_id":9001})
         if path=="/": return self.respond(env.get_template("index.html").render(),"text/html; charset=utf-8")
+        if path=="/settings":return self.respond(env.get_template("settings.html").render(),"text/html; charset=utf-8")
+        if path=="/api/auth/me":return self.respond({"providers":[{"provider":"google","updated_at":"模擬時間"},{"provider":"quark","updated_at":"模擬時間"}]})
+        if path=="/api/auth/google/status":return self.respond({"configured":True,"connected":True})
         if path in ("/tasks/9001","/tasks/9002"):
             return self.respond(env.get_template("task.html").render(job_id=int(path.rsplit('/',1)[1])),"text/html; charset=utf-8")
-        if path in ("/static/ui.js","/static/style.css"):
+        if path in ("/static/ui.js","/static/settings.js","/static/style.css"):
             return self.respond((ROOT/"web"/path.lstrip('/')).read_bytes(),"text/javascript" if path.endswith('.js') else "text/css")
         if path=="/api/tasks":return self.respond({"jobs":list(jobs.values())})
         if path=="/api/tasks/system/status":return self.respond(dict(version="0.5.4 DEMO",disk_free_gb=140,max_concurrent_jobs=2,providers={"google":True,"quark":True}))
@@ -46,6 +49,8 @@ class Preview(BaseHTTPRequestHandler):
         return self.respond({"detail":"fixture route not found"},status=404)
     def do_POST(self):
         path=urlsplit(self.path).path;body=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))) or b'{}')
+        if path.startswith('/api/auth/'):
+            return self.respond({"detail":"模擬錯誤：請檢查輸入；不連接真實網盤。"},status=503)
         match=re.fullmatch(r"/api/tasks/(900[12])/(pause|resume|cancel|selection)",path)
         if not match:return self.respond({"detail":"fixture mutation not allowed"},status=400)
         jid=int(match[1]);action=match[2];mutations.append({"job":jid,"action":action,"file_ids":body.get('file_ids',[])})

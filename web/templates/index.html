@@ -4,20 +4,22 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PanBridge</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.4-ui1" />
-  <script src="/static/ui.js?v=0.5.5-ui2" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=0.5.5-ui3.1" />
+  <script src="/static/ui.js?v=0.5.5-ui3" defer></script>
 </head>
 <body>
+  <a class="skip-link" href="#main">跳至主要內容</a>
   <div class="wrap">
     <header>
       <div class="logo">Pan<span>Bridge</span> <span class="muted" style="font-size:.75rem;font-weight:500" id="appver">Google Drive · 可選檔與暫停</span></div>
-      <nav>
+      <nav aria-label="主要導覽">
         <a href="/">任務</a>
         <a href="/settings">帳號設定</a>
         <a href="#" id="logout">登出</a>
       </nav>
     </header>
 
+    <main id="main">
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
     <section id="action-confirm" class="inline-confirm" tabindex="-1" aria-labelledby="confirm-message" hidden>
       <p id="confirm-message"></p>
@@ -28,26 +30,26 @@
     </div>
 
     <div class="card">
-      <h2>貼上分享連結</h2>
+      <h1>貼上分享連結</h1>
       <p class="muted">支援夸克 pan.quark.cn 與百度 pan.baidu.com。可多行批量。提取碼可寫在連結後 <code>?pwd=xxxx</code> 或下方欄位。</p>
-      <label>分享連結</label>
-      <textarea id="links" placeholder="https://pan.quark.cn/s/xxxx&#10;https://pan.baidu.com/s/xxxx 提取码: abcd"></textarea>
+      <label for="links">分享連結</label>
+      <textarea id="links" placeholder="https://pan.quark.cn/s/xxxx&#10;https://pan.baidu.com/s/xxxx 提取碼: abcd"></textarea>
       <div class="row">
         <div>
-          <label>統一提取碼（可選）</label>
+          <label for="pwd">統一提取碼（可選）</label>
           <input id="pwd" placeholder="若連結內已有可留空" />
         </div>
         <div>
-          <label>雲端目標路徑前綴</label>
+          <label for="path">雲端目標路徑前綴</label>
           <input id="path" placeholder="/PanBridge" value="/PanBridge" />
         </div>
       </div>
-      <label>存放目標（大文件必看）</label>
+      <label for="dest">存放目標（大文件必看）</label>
       <select id="dest">
         <option value="google" selected>Google Drive（使用已授權的 Google One 空間）</option>
         <option value="auto">自動：已連接 Google Drive 優先／其他可用目標</option>
         <option value="pcloud">強制：pCloud（免費空間小，大文件會失敗）</option>
-        <option value="local">強制：服務器暫存（僅自己下載，注意條款與磁盤）</option>
+        <option value="local">強制：伺服器暫存（僅自己下載，注意條款與磁碟）</option>
       </select>
       <p class="muted" style="margin-top:8px">Google One 空間透過 Google Drive 使用。目標未連接時不會偷偷改存其他網盤。</p>
       <label><input type="checkbox" id="select-files" checked /> 先列出文件讓我選擇，再開始下載</label>
@@ -70,6 +72,7 @@
         <tbody id="jobs"></tbody>
       </table></div>
     </div>
+    </main>
   </div>
   <script type="module">
     const $ = s => document.querySelector(s);
@@ -114,8 +117,8 @@
             ? (' · pCloud <b>' + esc(s.pcloud_free_gb) + 'G</b>')
             : '';
           el.innerHTML =
-            'v' + esc(s.version || '?') + ' · UI 2'+
-            ' · 磁盤 <b>' + esc(s.disk_free_gb ?? '?') + 'G</b>' +
+            'v' + esc(s.version || '?') + ' · UI 3'+
+            ' · 磁碟 <b>' + esc(s.disk_free_gb ?? '?') + 'G</b>' +
             pc +
             ' · 併發 ' + esc(s.max_concurrent_jobs ?? '?') +
             ' · 帳號 Google' + ok(p.google) +
@@ -123,7 +126,7 @@
             ' 夸克' + ok(p.quark) +
             ' 百度' + ok(p.baidu);
           const ver = document.getElementById('appver');
-          if (ver) ver.textContent = 'v' + (s.version || '')+' · UI 2';
+          if (ver) ver.textContent = 'v' + (s.version || '')+' · UI 3';
         }
     }
 

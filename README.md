@@ -7,7 +7,7 @@
 
 | | |
 |--|--|
-| **版本** | v0.5.5 · UI 2（下載／上傳流水線；生產版本以 `/api/health` 為準） |
+| **版本** | v0.5.5 · UI 3（下載／上傳流水線；生產版本以 `/api/health` 為準） |
 | **UI 語言** | 繁體中文（為主） |
 | **部署形態** | VPS systemd / Docker |
 | **核心能力** | 批量連結 · 搜尋選檔 · 暫停／繼續 · 斷點續傳 · 私人 Google Drive 搬運 |
@@ -123,10 +123,11 @@ ssh ubuntu@YOUR_HOST 'sudo systemctl restart panbridge && curl -s localhost:8080
 
 ## 使用流程
 
-1. **設定** → 連接 OneDrive（大檔）與/或 pCloud；連接夸克、百度  
-2. 首頁貼分享連結，選目標（大檔選 **onedrive**）  
-3. **開始後台搬運** → 任務列表看進度  
-4. 完成後到 OneDrive / pCloud 自取；或本機暫存頁下載  
+1. **帳號設定** → 連接 Google Drive，設定夸克／百度來源；pCloud 是可選目標。
+2. 首頁貼分享連結，選擇 **Google Drive** 與目標路徑。先確認 Google One 剩餘容量。
+3. 建立選檔任務 → 搜尋並勾選文件 → 確認開始搬運。
+4. 詳情頁查看下載／上傳進度。需要時暫停或繼續；失敗任務不要連續重試。
+5. 已交付文件用「雲端位置」開啟私人 Google Drive 文件。Infuse 需直接連接自己的 Drive；VLC 可用 Drive 電腦版。Google 網頁預覽不是通用媒體直鏈。
 
 ### 斷點續傳
 
@@ -134,7 +135,7 @@ ssh ubuntu@YOUR_HOST 'sudo systemctl restart panbridge && curl -s localhost:8080
 |------|------|
 | 下載 | `data/tmp/{job}/*.part` + `Range` |
 | 直鏈失效 | 自動重新取鏈後續傳 |
-| 上傳 | OneDrive 分片；失敗可整檔重試 session |
+| 上傳 | Google Drive 分塊上傳與工作階段續接；交付時核對遠端大小／ID |
 | 重啟服務 | Worker 重新認領 `downloading` 任務 |
 
 ---
@@ -158,8 +159,8 @@ ssh ubuntu@YOUR_HOST 'sudo systemctl restart panbridge && curl -s localhost:8080
 ## 限制與誠實說明
 
 - 夸克 / 百度為**非官方 Web API**，可能變更  
-- 百度**非 SVIP / 海外**常限速；本工具保證能續傳，不保證快  
-- pCloud 免費空間小，**大檔請用 OneDrive**  
+- 百度**非 SVIP / 海外**常限速；本工具支援續傳，不保證來源可用或滿速
+- pCloud 免費空間小；大檔可用已有足夠容量的 Google Drive／Google One
 - 僅供個人合法備份自用  
 
 ---
@@ -177,6 +178,12 @@ Dockerfile     容器
 ---
 
 ## Changelog（摘要）
+
+### v0.5.5 · UI 3
+- 設定頁統一安全請求、頁面內確認、同帳號操作防重複、純文字回饋。
+- 掃碼檢查不重疊、隱藏頁暫停、可停止等待；Cookie／密碼成功保存後清空輸入。
+- 繁體文案、表單標籤、鍵盤跳轉、淺／深色對比與窄螢幕設定版面補齊。
+- 過時使用說明改為 Google Drive；驗收界限見 [UI3_REVIEW.md](docs/UI3_REVIEW.md)。
 
 ### v0.5.3
 - 重新搬運確認改為頁面內提示，避免內建瀏覽器阻塞於原生彈出確認框；錯誤在頁面內顯示。

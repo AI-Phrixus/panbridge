@@ -2,7 +2,7 @@
 
 ## A. 現有 Oracle 實例（已部署）
 
-見 [HANDOFF.md](./HANDOFF.md) 第 2、6 節。最快路徑是 **rsync 程式碼 + systemctl restart**。
+見 [HANDOFF.md](./HANDOFF.md) 第2、6節。後端更新需檢查點與受控重啟；僅UI更新先保存精確web復原包，現有Jinja自動重載，不重啟搬運。復原程式不能覆蓋新增交付的DB。
 
 ---
 
@@ -43,7 +43,10 @@ HOST=0.0.0.0
 PORT=8080
 DATA_DIR=/home/ubuntu/panbridge/data
 MAX_CONCURRENT_JOBS=1
-DOWNLOAD_CONNECTIONS=2
+DOWNLOAD_CONNECTIONS=6
+TRANSFER_PREFETCH_FILES=3
+TRANSFER_STAGING_BYTES=68719476736
+DISK_RESERVE_BYTES=2147483648
 PCLOUD_API_HOST=eapi.pcloud.com
 PCLOUD_DEFAULT_PATH=/PanBridge
 ```
@@ -105,23 +108,20 @@ docker compose up -d --build
 | 用途 | 建議 |
 |------|------|
 | 系統 + 程式 | 5–8 GB |
-| 單任務最大檔 | 需 ≤ 可用空間 − ~1GB 預留 |
-| 50GB free tier | 單檔 ≤ ~25–30GB 較穩；下完上傳後會刪 tmp |
+| 安全留量 | 預設2 GiB；不要縮減以強行下載 |
+| 現有150GB盤 | 有界预取64 GiB、最多3件；失敗暫存與未知大小也計入安全策略 |
+| 小磁碟部署 | 先調整暫存預算；磁碟容量不等於傳輸帶寬 |
 
 ---
 
 ## E. 備份
 
-最少備份：
+應用程式復原與敏感資料備份要分開，敏感備份需加密並限制權限。SQLite使用backup API取得一致副本，不可直接打包正在寫入的DB／WAL／SHM當作可恢復證據。下列僅列必要範圍，不是可直接執行的完整安全備份程序：
 
 ```bash
-# 在 VPS
-tar czf panbridge-backup-$(date +%F).tgz \
-  /home/ubuntu/panbridge/.env \
-  /home/ubuntu/panbridge/data/app.db \
-  /home/ubuntu/panbridge/data/app.db-wal \
-  /home/ubuntu/panbridge/data/app.db-shm
-# 進行中的大檔 .part 可選（很大）
+# Oracle內：保存舊程式；SQLite backup()一致副本；必要加密設定。
+# 密鑰與DB不輸出到對話、終端記錄或Git。
+# .part與metadata按完整清單及校驗證據另行備份。
 ```
 
-還原：解壓到原路徑，確認 `PANBRIDGE_SECRET` 不變，`systemctl restart panbridge`。
+還原程式：先檢查精確復原包內容與當次版本，不能解壓覆蓋正在更新的 DB／暫存。UI-only 恢復 web 不重啟；後端恢復須另走檢查點與受控重啟，保持原密鑰。敏感資料還原是獨立程序，不能以程式復原包代替。

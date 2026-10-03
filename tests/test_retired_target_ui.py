@@ -8,7 +8,11 @@ def test_retired_target_removed_from_settings_and_summary():
     index = (ROOT / 'web/templates/index.html').read_text()
     assert '<h2>OneDrive' not in settings
     assert "$('#od-start')" not in settings
-    assert "['onedrive','onedrive_app','google_oauth'].includes(p.provider)" in settings
+    script = (ROOT / 'web/static/settings.js').read_text()
+    # Positive provider whitelist excludes both retired target and OAuth config.
+    assert "Object.hasOwn(names,p.provider)" in script
+    assert "google:'Google Drive'" in script
+    assert 'onedrive:' not in script and 'google_oauth:' not in script
     assert '<option value="onedrive">' not in index
     assert '帳號 OD' not in index
     assert 's.onedrive_free_gb' not in index

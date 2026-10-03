@@ -3,217 +3,84 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Settings · PanBridge</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.0" />
+  <title>帳號設定 · PanBridge</title>
+  <link rel="stylesheet" href="/static/style.css?v=0.5.5-ui3.1" />
+  <script src="/static/ui.js?v=0.5.5-ui3" defer></script>
+  <script src="/static/settings.js?v=0.5.5-ui3" defer></script>
 </head>
 <body>
+  <a class="skip-link" href="#main">跳至主要內容</a>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span></div>
-      <nav>
-        <a href="/">任務</a>
-        <a href="/settings">帳號設定</a>
-      </nav>
+      <div class="logo">Pan<span>Bridge</span> <small class="ui-version">UI 3</small></div>
+      <nav aria-label="主要導覽"><a href="/">任務</a><a href="/settings" aria-current="page">帳號設定</a></nav>
     </header>
-
-    <div class="card">
-      <h2>已連接帳號</h2>
-      <div id="providers" class="muted">載入中…</div>
-    </div>
-
-    <div class="card stack">
-      <h2>Google Drive／Google One</h2>
-      <p class="muted">只授權 PanBridge 建立或處理的文件，不要求整個雲盤的存取權。文件維持私人，不公開分享。憑證加密保存在伺服器。<a href="/privacy" target="_blank" rel="noopener">閱讀隱私與資料使用說明</a></p>
-      <p id="google-status" class="muted">載入 Google 連線狀態…</p>
-      <div class="actions"><button id="google-connect">連接 Google Drive</button><button id="google-clear" class="secondary">斷開 Google Drive</button></div>
-      <details><summary>首次設定 OAuth 用戶端（只需一次）</summary>
-        <p class="muted">Google Cloud 請建立「網頁應用程式」，回呼網址：<code>https://panbridge.tdtc.indevs.in/api/auth/google/callback</code>。外部應用請完成正式發布，避免測試模式的續期憑證只有七天。</p>
-        <label>Client ID</label><input id="google-client" autocomplete="off" />
-        <label>Client Secret</label><input id="google-secret" type="password" autocomplete="off" />
-        <button id="google-save" class="secondary">加密保存用戶端設定</button>
+    <main id="main" class="settings-page">
+      <h1>帳號設定</h1>
+      <p class="muted">Google Drive 是搬運目標，夸克與百度是來源。更換帳號不會自動重試或重新下載。</p>
+      <section id="action-confirm" class="inline-confirm" tabindex="-1" aria-labelledby="confirm-message" hidden>
+        <p id="confirm-message"></p>
+        <div class="actions"><button id="confirm-yes" type="button">確認</button><button id="confirm-no" class="secondary" type="button">返回</button></div>
+      </section>
+      <section class="card" aria-labelledby="accounts-heading">
+        <h2 id="accounts-heading">已連接帳號</h2>
+        <div id="providers" class="muted" role="status">載入中…</div>
+        <button id="accounts-refresh" class="secondary" type="button">刷新連線狀態</button>
+      </section>
+      <section class="card stack" aria-labelledby="google-heading">
+        <h2 id="google-heading">Google Drive／Google One</h2>
+        <p class="muted">文件維持私人。只授權本應用建立或處理的文件，不要求整個雲盤的存取權。憑證加密保存在 Oracle。<a href="/privacy">隱私與資料使用說明</a></p>
+        <p id="google-status" class="muted" role="status">載入 Google 連線狀態…</p>
+        <div class="actions"><button id="google-connect" type="button">連接 Google Drive</button><button id="google-clear" class="secondary" type="button">斷開 Google Drive</button></div>
+        <details><summary>首次設定 OAuth 用戶端</summary>
+          <p class="muted">建立網頁應用程式，回呼網址：<code>https://panbridge.tdtc.indevs.in/api/auth/google/callback</code>。外部應用的測試模式可能使續期憑證七天後失效。</p>
+          <label for="google-client">Client ID</label><input id="google-client" autocomplete="off" spellcheck="false" />
+          <label for="google-secret">Client Secret</label><input id="google-secret" type="password" autocomplete="off" />
+          <button id="google-save" class="secondary" type="button">加密保存用戶端設定</button>
+        </details>
+        <p id="google-msg" role="status" aria-live="polite"></p>
+      </section>
+      <h2>下載來源</h2>
+      <div class="settings-grid">
+        <section class="card stack" aria-labelledby="quark-heading">
+          <h3 id="quark-heading">夸克網盤</h3>
+          <p class="muted">用手機夸克 App 掃描登入二維碼。若憑證過期，重新登入後再回任務頁處理；此處不會自動重試任務。</p>
+          <div class="actions"><button id="qk-qr" type="button">開始掃碼登入</button><button id="qk-stop" type="button" class="secondary" hidden>停止等待</button><button id="qk-clear" type="button" class="secondary">清除夸克憑證</button></div>
+          <div id="qk-qrbox" class="qrbox" hidden><img id="qk-img" alt="夸克登入二維碼" /></div>
+          <p id="qk-status" class="muted" role="status"></p>
+          <details><summary>備用：手動貼上 Cookie</summary>
+            <label for="qk-cookie">夸克 Cookie</label><textarea id="qk-cookie" autocomplete="off" spellcheck="false" placeholder="僅在掃碼不可用時，貼上 pan.quark.cn 完整 Cookie"></textarea>
+            <button id="qk-cookie-save" class="secondary" type="button">保存 Cookie</button>
+          </details>
+          <p id="qk-msg" role="status" aria-live="polite"></p>
+        </section>
+        <section class="card stack" aria-labelledby="baidu-heading">
+          <h3 id="baidu-heading">百度網盤</h3>
+          <p class="muted">用手機百度 App 掃碼。海外或非 SVIP 可能被限速；斷點續傳不代表能突破來源限速。</p>
+          <div class="actions"><button id="bd-qr" type="button">開始掃碼登入</button><button id="bd-stop" type="button" class="secondary" hidden>停止等待</button><button id="bd-clear" type="button" class="secondary">清除百度憑證</button></div>
+          <div id="bd-qrbox" class="qrbox" hidden><img id="bd-img" alt="百度登入二維碼" /></div>
+          <p id="bd-status" class="muted" role="status"></p>
+          <details><summary>備用：手動貼上 Cookie</summary>
+            <label for="bd-cookie">百度 Cookie（需含 BDUSS）</label><textarea id="bd-cookie" autocomplete="off" spellcheck="false" placeholder="BDUSS=...; STOKEN=..."></textarea>
+            <button id="bd-cookie-save" class="secondary" type="button">保存 Cookie</button>
+          </details>
+          <p id="bd-msg" role="status" aria-live="polite"></p>
+        </section>
+      </div>
+      <details class="card"><summary>可選目標：pCloud</summary>
+        <p class="muted">只有需要搬到 pCloud 時才設定。免費空間有限，搬運前請確認容量。憑證加密保存在伺服器，不在你的 Mac。</p>
+        <div class="row"><div><label for="pc-email">電子郵件</label><input id="pc-email" type="email" autocomplete="username" /></div><div><label for="pc-pass">密碼</label><input id="pc-pass" type="password" autocomplete="current-password" /></div></div>
+        <label for="pc-code">兩步驗證碼（啟用 2FA 時必填）</label><input id="pc-code" inputmode="numeric" autocomplete="one-time-code" placeholder="未啟用可留空" />
+        <label for="pc-host">帳號所在區域</label><select id="pc-host"><option value="eapi.pcloud.com">歐盟 EU</option><option value="api.pcloud.com">美國 US</option></select>
+        <div class="actions"><button id="pc-save" type="button">連接 pCloud</button></div><p id="pc-msg" role="status" aria-live="polite"></p>
+        <details><summary>備用：使用既有 auth token</summary>
+          <p class="muted">僅使用你自己的 pCloud 憑證，視同密碼保管；不要貼到對話或公開記錄。不要以 token 繞過兩步驗證。</p>
+          <label for="pc-token">auth token（不含 auth=）</label><input id="pc-token" type="password" autocomplete="off" />
+          <label for="pc-token-host">帳號所在區域</label><select id="pc-token-host"><option value="api.pcloud.com">美國 US</option><option value="eapi.pcloud.com">歐盟 EU</option></select>
+          <div class="actions"><button id="pc-token-save" class="secondary" type="button">用 Token 連接 pCloud</button></div><p id="pc-token-msg" role="status" aria-live="polite"></p>
+        </details>
       </details>
-      <p id="google-msg"></p>
-    </div>
-
-    <div class="card stack">
-      <h2>pCloud</h2>
-      <p class="muted">使用 pCloud 帳號密碼取得 auth token（加密存於本機 data）。歐盟用 eapi.pcloud.com，美國用 api.pcloud.com。</p>
-      <div class="row">
-        <div><label>Email</label><input id="pc-email" type="email" /></div>
-        <div><label>Password</label><input id="pc-pass" type="password" /></div>
-      </div>
-      <label>两步验证码 2FA（若 pCloud 开启了验证器则必填，6 位数字）</label>
-      <input id="pc-code" inputmode="numeric" autocomplete="one-time-code" placeholder="未开启 2FA 可留空" />
-      <label>API Host</label>
-      <select id="pc-host">
-        <option value="eapi.pcloud.com">eapi.pcloud.com (EU)</option>
-        <option value="api.pcloud.com">api.pcloud.com (US)</option>
-      </select>
-      <div class="actions"><button id="pc-save">連接 pCloud</button></div>
-      <p id="pc-msg"></p>
-    </div>
-
-
-    <div class="card stack">
-      <h2>pCloud — 推荐：粘贴 auth token（适合开了 2FA）</h2>
-      <p class="muted">网页能登录但密码+验证码 API 失败时用此法。步骤：① 浏览器打开
-      <a href="https://my.pcloud.com/" target="_blank" rel="noopener">my.pcloud.com</a> 并登录
-      ② 按 F12 → Network（网络）③ 刷新页面 ④ 点任意发往 api.pcloud.com / eapi.pcloud.com 的请求
-      ⑤ 在 URL 或 Form Data 里找到 <b>auth=</b> 后面那一长串，复制整段 token 粘贴下方。</p>
-      <label>auth token</label>
-      <textarea id="pc-token" placeholder="很长的一串字符，不要带 auth="></textarea>
-      <label>API Host（不确定选 US 即可）</label>
-      <select id="pc-token-host">
-        <option value="api.pcloud.com">api.pcloud.com (US)</option>
-        <option value="eapi.pcloud.com">eapi.pcloud.com (EU)</option>
-      </select>
-      <div class="actions"><button id="pc-token-save">用 Token 连接 pCloud</button></div>
-      <p id="pc-token-msg"></p>
-    </div>
-
-
-    <div class="card stack">
-      <h2>夸克網盤</h2>
-      <p class="muted">與百度相同：點按鈕 → 手機夸克 App <b>掃畫面上的登錄二維碼</b> → 自動提取 Cookie（無需 F12）。若看到「下載客戶端/升級」字樣請刷新重試。Cookie 過期導致下載 403/412 時也請重新掃碼。</p>
-      <div class="actions">
-        <button id="qk-qr">開始掃碼登錄</button>
-        <button class="secondary" id="qk-clear">清除夸克憑證</button>
-      </div>
-      <div id="qk-qrbox" class="qrbox" style="display:none;margin-top:12px"><img id="qk-img" alt="quark login qr" style="max-width:220px;background:#fff;padding:12px;border-radius:8px" /></div>
-      <p id="qk-status" class="muted"></p>
-      <label>備用：手動貼 Cookie（一般不用）</label>
-      <textarea id="qk-cookie" placeholder="僅在掃碼不可用時，才從 pan.quark.cn 複製完整 Cookie"></textarea>
-      <div class="actions"><button class="secondary" id="qk-cookie-save">保存 Cookie</button></div>
-      <p id="qk-msg"></p>
-    </div>
-
-    <div class="card stack">
-      <h2>百度網盤</h2>
-      <p class="muted">手機百度 App 掃碼。海外無 SVIP 下載可能很慢，斷點續傳可扛中斷。</p>
-      <div class="actions">
-        <button id="bd-qr">開始掃碼登錄</button>
-        <button class="secondary" id="bd-clear">清除百度憑證</button>
-      </div>
-      <div id="bd-qrbox" class="qrbox" style="display:none;margin-top:12px"><img id="bd-img" alt="baidu qr" /></div>
-      <p id="bd-status" class="muted"></p>
-      <label>或貼上 Cookie（需含 BDUSS）</label>
-      <textarea id="bd-cookie" placeholder="BDUSS=...; STOKEN=..."></textarea>
-      <div class="actions"><button class="secondary" id="bd-cookie-save">保存 Cookie</button></div>
-      <p id="bd-msg"></p>
-    </div>
+    </main>
   </div>
-  <script>
-    async function googleStatus(){const r=await fetch('/api/auth/google/status');if(!r.ok)return;const d=await r.json();document.getElementById('google-status').textContent=d.connected?'Google Drive 已連接':d.configured?'OAuth 已配置；請連接並選擇正確的 Google One 帳號':'等待首次 OAuth 配置';}
-    document.getElementById('google-save').onclick=async()=>{const r=await fetch('/api/auth/google/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:document.getElementById('google-client').value.trim(),client_secret:document.getElementById('google-secret').value.trim()})});const d=await r.json().catch(()=>({}));document.getElementById('google-msg').textContent=r.ok?'用戶端已加密保存':typeof d.detail==='string'?d.detail:'設定不完整，請檢查用戶端資訊';if(r.ok)document.getElementById('google-secret').value='';googleStatus();};
-    document.getElementById('google-connect').onclick=async()=>{const r=await fetch('/api/auth/google/start',{method:'POST'});const d=await r.json().catch(()=>({}));if(!r.ok){document.getElementById('google-msg').textContent=d.detail||'無法開始授權';return;}location.href=d.url;};
-    document.getElementById('google-clear').onclick=async()=>{if(!confirm('停止本站使用 Google Drive？雲端文件不會刪除。'))return;await fetch('/api/auth/google',{method:'DELETE'});googleStatus();};
-    googleStatus();
-    const $ = s => document.querySelector(s);
-    async function refreshProviders(){
-      const r = await fetch('/api/auth/me');
-      if (r.status===401){ location.href='/login'; return; }
-      const data = await r.json();
-      const list = (data.providers||[]).filter(p => !['onedrive','onedrive_app','google_oauth'].includes(p.provider));
-      $('#providers').innerHTML = list.length
-        ? '<ul>'+list.map(p=>`<li><b>${p.provider}</b> · 更新於 ${p.updated_at}</li>`).join('')+'</ul>'
-        : '尚未連接任何帳號';
-    }
-    $('#pc-save').onclick = async () => {
-      const payload = {
-        email: $('#pc-email').value.trim(),
-        password: $('#pc-pass').value,
-        api_host: $('#pc-host').value,
-        code: ($('#pc-code') && $('#pc-code').value) ? $('#pc-code').value.trim() : ''
-      };
-      const r = await fetch('/api/auth/pcloud/login', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(payload)
-      });
-      const d = await r.json().catch(()=>({}));
-      let err = d.detail || d.message || 'failed';
-      if (Array.isArray(err)) err = err.map(x => x.msg || JSON.stringify(x)).join('; ');
-      $('#pc-msg').innerHTML = r.ok ? '<span class="ok">pCloud 已連接</span>' : `<span class="err">${err}</span>`;
-      refreshProviders();
-    };
-    let qkTimer=null;
-    $('#qk-qr').onclick = async () => {
-      $('#qk-msg').innerHTML = '';
-      $('#qk-status').textContent = '正在取得登錄二維碼…';
-      $('#qk-qrbox').style.display = 'none';
-      const r = await fetch('/api/auth/quark/qr/start', {method:'POST'});
-      const d = await r.json().catch(()=>({}));
-      if (!r.ok) {
-        let err = d.detail || d.message || r.statusText;
-        if (Array.isArray(err)) err = err.map(x => x.msg || JSON.stringify(x)).join('; ');
-        $('#qk-status').innerHTML = '<span class="err">'+err+'</span>';
-        return;
-      }
-      // API 直接返回真正登錄 QR（不再截取官網升級/下載碼）
-      if (d.qr_data_url){ $('#qk-qrbox').style.display='inline-block'; $('#qk-img').src=d.qr_data_url; }
-      $('#qk-status').textContent = '狀態: '+(d.status||'pending')+' '+(d.message||'');
-      if (qkTimer) clearInterval(qkTimer);
-      qkTimer = setInterval(async ()=>{
-        const s = await (await fetch('/api/auth/quark/qr/'+d.id)).json().catch(()=>({}));
-        $('#qk-status').textContent = '狀態: '+(s.status||'')+' '+(s.message||'')+(s.debug?(' · '+s.debug):'');
-        if (s.qr_data_url){ $('#qk-qrbox').style.display='inline-block'; $('#qk-img').src=s.qr_data_url; }
-        if (s.status==='confirmed'||s.status==='error'||s.status==='expired'){
-          clearInterval(qkTimer); refreshProviders();
-          if (s.status==='confirmed') {
-            $('#qk-msg').innerHTML='<span class="ok">夸克已登錄（Cookie 已自動保存）· 請回去重試失敗的夸克任務</span>';
-          } else if (s.status==='error') {
-            $('#qk-msg').innerHTML='<span class="err">'+(s.message||'掃碼失敗')+'</span>';
-          } else {
-            $('#qk-msg').innerHTML='<span class="err">掃碼超時，請再點一次</span>';
-          }
-        }
-      }, 1500);
-    };
-    $('#qk-cookie-save').onclick = async ()=>{
-      const r = await fetch('/api/auth/quark/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:$('#qk-cookie').value})});
-      const d = await r.json().catch(()=>({}));
-      $('#qk-msg').innerHTML = r.ok ? `<span class="ok">OK ${d.nickname||''}</span>` : `<span class="err">${d.detail||'fail'}</span>`;
-      refreshProviders();
-    };
-    $('#qk-clear').onclick = async ()=>{ await fetch('/api/auth/quark',{method:'DELETE'}); refreshProviders(); };
-    let bdTimer=null;
-    $('#bd-qr').onclick = async ()=>{
-      const r = await fetch('/api/auth/baidu/qr/start',{method:'POST'});
-      const d = await r.json();
-      if (d.imgurl){ $('#bd-qrbox').style.display='inline-block'; $('#bd-img').src=d.imgurl; }
-      $('#bd-status').textContent = '狀態: '+d.status;
-      if (bdTimer) clearInterval(bdTimer);
-      bdTimer = setInterval(async ()=>{
-        const s = await (await fetch('/api/auth/baidu/qr/'+d.id)).json();
-        $('#bd-status').textContent = '状态: '+s.status+' '+(s.message||'')+(s.debug?(' | '+s.debug):'');
-        if (s.imgurl){ $('#bd-img').src=s.imgurl; }
-        if (s.status==='confirmed'||s.status==='expired'||s.status==='error'){
-          clearInterval(bdTimer); refreshProviders();
-          if (s.status==='confirmed') $('#bd-msg').innerHTML='<span class="ok">百度已登錄</span>';
-        }
-      }, 2000);
-    };
-    $('#bd-cookie-save').onclick = async ()=>{
-      const r = await fetch('/api/auth/baidu/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:$('#bd-cookie').value})});
-      const d = await r.json().catch(()=>({}));
-      $('#bd-msg').innerHTML = r.ok ? '<span class="ok">已保存</span>' : `<span class="err">${d.detail||'fail'}</span>`;
-      refreshProviders();
-    };
-    $('#bd-clear').onclick = async ()=>{ await fetch('/api/auth/baidu',{method:'DELETE'}); refreshProviders(); };
-
-    $('#pc-token-save').onclick = async () => {
-      const r = await fetch('/api/auth/pcloud/token', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ auth: $('#pc-token').value.trim(), api_host: $('#pc-token-host').value })
-      });
-      const d = await r.json().catch(()=>({}));
-      let err = d.detail || 'failed';
-      if (Array.isArray(err)) err = err.map(x => x.msg || JSON.stringify(x)).join('; ');
-      $('#pc-token-msg').innerHTML = r.ok ? '<span class="ok">pCloud 已連接（token）</span>' : `<span class="err">${err}</span>`;
-      refreshProviders();
-    };
-
-
-    refreshProviders();
-  </script>
 </body>
 </html>

@@ -1,13 +1,15 @@
 # PanBridge 交接手冊（新帳號接手必讀）
 
-> 倉庫版本：**v0.5.5 · UI 2**（後端以 `/api/health` 為準）
+> 倉庫版本：**v0.5.5 · UI 3**（後端以 `/api/health` 為準）
 >
-> 最後更新：2026-10-02
+> 最後更新：2026-10-03
 > 目的：讓**全新 GitHub / 開發環境**在不依賴舊對話上下文的情況下，能接手運維與開發。
 
 ---
 
 ### 最新增量與待辦
+
+2026-10-03 收尾：UI 3 補齊設定頁安全請求、純文字回饋、同帳號操作鎖、可停止串行掃碼、繁體標籤、對比及窄螢幕重排。驗收與復原見 [UI3_REVIEW.md](UI3_REVIEW.md)。今天停止定時檢查；2026-10-04 00:00日本時間起每3小時一次，Oracle自主搬運不停止。Google全量校驗／Mac清理、真實同檔速度比較、Mac／Windows播放器驗收仍未達完成門檻。下方各日期是歷史快照，不是目前進度。
 
 2026-10-02 UI 2 已正式部署：本部署當前項目視圖從內部任務 #16 開始，列表按建立順序，顯示序號從 1 起。現在顯示 #1 = 內部 #16、顯示 #2 = 內部 #18；任何運維、API 與備份校驗必須繼續使用內部 #16／#18，不改資料庫 ID。#15／#17 已軟刪除；其餘舊項目記錄只從新列表隔離，歷史資料與 #13→#16、#14→#18 備份映射保留。這不是重新下載。18 項 UI、213 項程式測試通過，內建瀏覽器實測正式列表與詳情一致，部署沒有服務重啟；完整設定、驗收界限與復原见 [TASK_VIEW_REVIEW.md](TASK_VIEW_REVIEW.md)。
 
@@ -94,10 +96,7 @@ curl -s https://panbridge.tdtc.indevs.in/api/health
 
 ### 密鑰與口令（只在伺服器，不上 Git）
 
-```bash
-# 在 VPS 上查看（不要貼到公開 issue / 公開 repo）
-sudo cat /home/ubuntu/panbridge/.env
-```
+只核對所需設定是否存在，不讀取或輸出整份 `.env`。秘密不得貼到終端記錄、對話、公開 issue 或 Git。
 
 常見鍵：
 
@@ -106,7 +105,7 @@ sudo cat /home/ubuntu/panbridge/.env
 - `DATA_DIR=/home/ubuntu/panbridge/data`  
 - `MAX_CONCURRENT_JOBS=1`  
 
-**帳號憑證**（百度 / 夸克 / pCloud / OneDrive）加密存在 SQLite：
+**帳號憑證**（百度 / 夸克 / pCloud / Google；舊目標僅歷史）加密存在 SQLite：
 
 ```text
 /home/ubuntu/panbridge/data/app.db  →  table credentials
@@ -117,7 +116,7 @@ sudo cat /home/ubuntu/panbridge/.env
 
 ---
 
-## 3. 交接當下任務狀態
+## 3. 歷史任務快照（2026-08-26，舊 OneDrive 項目）
 
 > **權威快照（可公開、會迭代）**：[STATUS.md](./STATUS.md)  
 > 以下為摘要；接手後**必須**再查實時數據。
@@ -155,9 +154,9 @@ df -h /
 panbridge/
   app/                 # FastAPI + worker
     api/               # HTTP routes
-    auth/              # 夸克/百度/pCloud/OneDrive 登入
+    auth/              # 夸克/百度/pCloud/Google；保留舊目標相容碼
     sources/           # 分享解析 + 取直鏈
-    sinks/             # OneDrive / pCloud / local
+    sinks/             # Google / pCloud / local；保留舊目標相容碼
     transfer/          # 斷點下載、磁碟檢查
     workers/runner.py  # 後台任務主循環
     stream/            # 播放串流解析
@@ -239,32 +238,30 @@ ssh ubuntu@152.70.86.29 '
 |-----------|------|
 | **百度** | 設定頁掃碼，或貼完整 Cookie（需 `BDUSS`，建議含 `STOKEN`） |
 | **夸克** | 純 CAS API 掃碼或貼 Cookie；v0.4.0 自動保存輪換 Cookie |
-| **pCloud** | 帳密（2FA 可填驗證碼）或貼 `auth` token（推薦有 2FA 時） |
-| **OneDrive** | Azure **公用用戶端** Client ID + 裝置碼登入（無需公網回調） |
+| **pCloud** | 帳密（2FA 可填驗證碼）或自己的既有 `auth` token；不以 token 繞過 2FA |
+| **Google Drive** | 網頁 OAuth、最小 drive.file 授權與正式 HTTPS 回呼 |
 
-### OneDrive 注意
+### Google Drive 注意
 
-- 大檔（>數 GB）**務必選 OneDrive**；pCloud 免費額度通常不夠  
-- 目前 UI 預填的 Client ID（若仍有效）：見 `web/templates/settings.html`  
-- 若失效：到 [Azure Portal](https://portal.azure.com) 建應用  
-  - 行動與桌面應用 / 公用用戶端  
-  - 允許裝置碼流程  
-  - 委派權限：`Files.ReadWrite`、`User.Read`、`offline_access`  
+- Google One空間透過Drive使用，先確認目標帳號與剩餘容量。
+- 不索取整盤權限，不公開分享；OAuth用戶端與令牌加密留在Oracle。
+- 任務綁定目標帳號，換帳號不能假定舊任務能繼續。
+- OneDrive已停用，不重啟舊裝置碼流程或重試舊任務。
 
 ---
 
 ## 8. 已知行為與坑（接手必知）
 
-1. **百度限速**：海外 VPS 常很慢；工具保證續傳，不保證快。  
+1. **百度限速**：海外 VPS 常很慢；工具支援續傳，不保證來源可用或滿速。
 2. **百度直鏈過期**：worker 會重新 `prepare_download` 再 Range 續傳。  
 3. **下載卡死**：v0.3.3+ 有 read timeout + 120s 無進度重連 + 10 分鐘 job 看門狗；v0.4.0 會同步刷新 URL 與 Cookie。
-4. **磁碟**：~50GB 系統盤；單檔 ~25GB 下完會佔大量 tmp，上傳成功後會刪暫存。  
+4. **磁碟**：150 GB開機盤，有界預取64 GiB、最多3件、保留2 GiB安全留量。失敗暫存仍佔預算，稀疏檔表面大小不代表完成。
 5. **MemoryMax=800M**：適合 free tier；勿開太多並行。  
 6. **進度條**：按**檔案大小加權**（大檔主導），不是「檔案個數」。  
 7. **單檔失敗**：不中止整任務；可重試 failed 檔。  
 8. **百度轉存**：分享會轉到帳號下 `/PanBridge-Temp/...` 再取 dlink（網盤側可能堆積，可手動清）。  
-9. **不通知**：完成需自己看 UI 或 OneDrive。  
-10. **OneDrive 安全名稱**：v0.4.5 會把禁用字元改成全形並保存實際 Microsoft 名稱；非空檔使用 `rename` 防覆蓋。0-byte 檔在沒有原子防覆蓋保障時會安全失敗。
+9. **通知**：應用未內建推播；可看UI／Google Drive。Codex定時檢查另按使用者排程，不是應用功能。
+10. **歷史 OneDrive 安全名稱**：v0.4.5 的全形名稱與 `rename` 行為僅是舊版本成果，不適用於當前 Google 任務或播放驗收。
 
 ---
 
@@ -276,10 +273,10 @@ ssh ubuntu@152.70.86.29 '
 | 登入失敗 | `.env` 的 `ADMIN_PASSWORD` |
 | 一直 downloading 不動 | `journalctl -u panbridge`；看 UI `downloaded_bytes` / `du`，不要相信稀疏 `.part` 的 `ls` 表面大小 |
 | 403 下載 | 百度 Cookie / UA；程式已對百度用 `LogStatistic` UA |
-| OneDrive 上傳失敗 | 設定頁重新裝置碼；磁碟是否已下完整檔 |
+| Google上傳失敗 | 檢查原目標帳號、授權／容量與完整暫存；不要換帳號盲目重試 |
 | 憑證解密失敗 | `PANBRIDGE_SECRET` 是否被改過 |
 | 啟動即報「安全設定未完成」 | `.env` 仍是範例 secret／弱密碼；填入隨機 secret 與至少 10 字元管理密碼 |
-| Windows／Infuse 播放 | 播放頁複製 7 天串流網址，或下載 `.m3u`；反向代理請設定 `PUBLIC_BASE_URL` |
+| Google的Windows／Infuse播放 | Infuse直接連接Drive；VLC用Drive電腦版。Google不提供通用m3u，真機小／大檔與拖曳尚待驗收 |
 
 ```bash
 # 看 .part 是否在長
@@ -342,7 +339,7 @@ git push -u origin main
 ## 12. 聯絡上下文（非機密）
 
 - 使用者語言偏好：**繁體中文** UI  
-- 偏好目標：大檔 → **OneDrive 5T**；小檔可 pCloud  
+- 目前目標：**Google Drive／Google One**；pCloud可選，OneDrive已停用。
 - 部署區：Oracle **Osaka** free tier  
 - 歷史痛點：整晚下載假死（已修 timeout）、pCloud 空間不足、百度 403（LogStatistic UA）  
 - 公開 repo 擁有者（寫文時）：`AI-Phrixus` · 計畫轉移到新帳號

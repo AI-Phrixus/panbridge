@@ -14,14 +14,15 @@ sudo systemctl status cloudflared
 
 ```bash
 curl -s http://127.0.0.1:8080/api/health
-# {"ok":true,"version":"0.4.5"}
+# {"ok":true,"version":"0.5.5"}，UI增量另看頁面標示
 curl -s https://panbridge.tdtc.indevs.in/api/health
 ```
 
 ## 任務
 
 - UI：`/` 列表、`/tasks/{id}` 詳情  
-- 失敗：點「重試」（進行中不可重試，需先取消）  
+- 暫停／繼續：保存原檢查點。resume可能重排failed，不作無限重試。
+- 失敗：先分類與核對授權，再進行有界接續；不能為刷新介面取消下載。
 - 取消：狀態 cancelled；下載會在下一次進度回呼中斷  
 - 公開狀態摘要：[STATUS.md](./STATUS.md)
 
@@ -60,6 +61,7 @@ watch -n 30 'du -h /home/ubuntu/panbridge/data/tmp/2/* 2>/dev/null; curl -s loca
 |------|------|
 | UI `downloaded_bytes` / `du` 持續增長 | **不要** restart |
 | 部署新程式碼 | 可 restart（會斷流但續傳） |
+| 僅web模板／CSS／JS更新 | 保存精確web復原包，校驗雜湊；目前Jinja自動重載，不restart下載 |
 | `.part` 15 分鐘完全不動 + 日誌無進展 | 可 restart 一次並驗證續傳 |
 | 改 `.env` / secret | 需 restart（可能要重登網盤） |
 
@@ -80,8 +82,8 @@ watch -n 30 'du -h /home/ubuntu/panbridge/data/tmp/2/* 2>/dev/null; curl -s loca
 ```bash
 df -h /
 du -sh /home/ubuntu/panbridge/data/*
-# 已完成且已上傳的 tmp 應自動刪；若殘留：
-# 確認任務 done 後再手動刪 tmp/{job_id}
+# 程式在交付核對後自動處理自身tmp；手動清理不能僅依任務done。
+# Mac原13/14備份必須477件fresh Google size/SHA-256等完整驗收，再本機重算後逐件依清單清理。
 ls -la /home/ubuntu/panbridge/data/tmp/
 ls -la /home/ubuntu/panbridge/data/delivered/
 ```

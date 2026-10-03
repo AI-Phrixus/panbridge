@@ -4,25 +4,27 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>任務 · PanBridge</title>
-  <link rel="stylesheet" href="/static/style.css?v=0.5.4-ui1" />
-  <script src="/static/ui.js?v=0.5.5-ui2" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=0.5.5-ui3.1" />
+  <script src="/static/ui.js?v=0.5.5-ui3" defer></script>
 </head>
 <body>
+  <a class="skip-link" href="#main">跳至主要內容</a>
   <div class="wrap">
     <header>
-      <div class="logo">Pan<span>Bridge</span> <small class="ui-version">選檔 · 暫停 · 雲端搬運 · UI 2</small></div>
-      <nav>
+      <div class="logo">Pan<span>Bridge</span> <small class="ui-version">選檔 · 暫停 · 雲端搬運 · UI 3</small></div>
+      <nav aria-label="主要導覽">
         <a href="/">← 任務列表</a>
         <a href="/settings">帳號設定</a>
       </nav>
     </header>
+    <main id="main">
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
     <section id="action-confirm" class="inline-confirm" tabindex="-1" aria-labelledby="confirm-message" hidden>
       <p id="confirm-message"></p>
       <div class="actions"><button id="confirm-yes" type="button">確認</button><button id="confirm-no" class="secondary" type="button">返回</button></div>
     </section>
     <div class="card">
-      <h2 id="task-heading">任務明細</h2>
+      <h1 id="task-heading">任務明細</h1>
       <p id="task-title" class="muted"></p>
       <div id="meta" class="muted"></div>
       <div class="actions" id="jobActions"></div>
@@ -36,10 +38,10 @@
       <button class="secondary" type="button" onclick="jobPoll.refresh()">立即刷新</button>
     </div>
     <div class="card" id="task-files">
-      <h3>檔案</h3>
+      <h2>檔案</h2>
       <p class="muted">Google Drive 私人文件：Infuse 請在「新增檔案 → 新增共享」連接 Google Drive；Windows／Mac 的 VLC 可開啟 Google Drive 電腦版中的串流文件。不要把私人文件改為公開分享。Oracle 不轉送已交付的影片。</p>
       <div id="selection" hidden>
-        <p>勾選想要下載的文件，未選文件不會下载。</p>
+        <p>勾選想要下載的文件，未選文件不會下載。</p>
         <div class="actions"><button class="secondary" onclick="selectVisible(true)">選取全部搜尋結果</button><button class="secondary" onclick="selectVisible(false)">取消全部搜尋結果</button><button id="start-selection" onclick="confirmSelection()">確認並開始搬運</button></div>
         <p id="selection-summary" class="muted"></p>
       </div>
@@ -56,6 +58,7 @@
         <tbody id="files"></tbody>
       </table></div>
     </div>
+    </main>
   </div>
   <script type="module">
     const jobId = {{ job_id }};

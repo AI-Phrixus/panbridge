@@ -35,7 +35,9 @@ before deleting only the delegated whitelist. These tools never delete Mac files
 
 For normal monitoring, run mapping only. Until all 477 mappings are ready, keep the
 Mac backup. Once all are ready, run a fresh complete Google verification; do not
-repeatedly query hundreds of unchanged Google objects every 30 minutes.
+repeatedly query hundreds of unchanged Google objects on each scheduled check.
+The current user schedule skips automatic checks on October 3, 2026 and starts
+every three hours from October 4 at 00:00 Asia/Tokyo; healthy progress stays quiet.
 
 ## Evidence, 2026-10-01
 

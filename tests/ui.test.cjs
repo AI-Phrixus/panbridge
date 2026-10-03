@@ -89,8 +89,19 @@ test('page scripts parse, use bounded polling, and do not create native modal di
     new vm.Script(source);
     assert.doesNotMatch(source,/\b(?:alert|confirm|setInterval)\s*\(/);
     assert.match(source,/PB\.poll/);assert.match(html,/role="status"/);
-    assert.match(html,/action-confirm/);assert.match(html,/ui\.js\?v=0\.5\.5-ui2/);
+    assert.match(html,/action-confirm/);assert.match(html,/ui\.js\?v=0\.5\.5-ui3/);
   }
+});
+
+test('settings has the same safe request, confirmation and polling contract', () => {
+  const html=fs.readFileSync(__dirname+'/../web/templates/settings.html','utf8');
+  assert.doesNotMatch(html,/\b(?:confirm|setInterval)\s*\(/);
+  assert.doesNotMatch(html,/\.innerHTML\s*=/);
+  assert.match(html,/action-confirm/);
+  assert.match(html,/ui\.js\?v=0\.5\.5-ui3/);
+  assert.match(html,/settings\.js\?v=0\.5\.5-ui3/);
+  for(const field of ['google-client','google-secret','pc-email','pc-pass','qk-cookie','bd-cookie'])
+    assert.match(html,new RegExp('<label for="'+field+'"'));
 });
 
 test('new project rows start at one without changing IDs, source records or progress',()=>{

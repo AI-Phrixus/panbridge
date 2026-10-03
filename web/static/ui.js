@@ -130,7 +130,8 @@
     const previous = root.document.activeElement;
     root.document.getElementById('confirm-message').textContent = message;
     const yes = root.document.getElementById('confirm-yes');
-    yes.textContent = label; box.hidden = false; box.focus();
+    yes.textContent = label; box.hidden = false;
+    box.scrollIntoView?.({block:'center',behavior:'auto'}); box.focus();
     return new Promise(resolve => {
       function finish(answer) {
         box.hidden = true; resolveConfirmation = null;
